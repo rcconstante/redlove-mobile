@@ -111,7 +111,7 @@ const LEGAL_CONTENT: Record<LegalKind, LegalContent> = {
 const MATCH_MAKER_SWIPE_THRESHOLD = 90;
 const MATCH_MAKER_SUPERLIKE_THRESHOLD = 85;
 const WEBRTC_NATIVE_BUILD_MESSAGE =
-  'WebRTC native module not found. Voice and video calls require the custom RedLOVE Expo development build or a production build. Expo Go cannot load react-native-webrtc. If this is already a dev build, rebuild and reinstall it after native dependency changes.';
+  'WebRTC native module not found. Voice and video calls require the custom RedLove Expo development build or a production build. Expo Go cannot load react-native-webrtc. If this is already a dev build, rebuild and reinstall it after native dependency changes.';
 
 const MOODS = [
   "Let's hang out",
@@ -128,7 +128,7 @@ const MOODS = [
 
 const ONBOARDING_STEPS = [
   {
-    eyebrow: 'RedLOVE',
+    eyebrow: 'RedLove',
     title: 'Find real connections',
     body: 'Meet people who like you for who you are.',
   },
@@ -2768,7 +2768,7 @@ export function ChatScreen() {
           <ChatCallOverlay
             phase={callPhase}
             kind={callKind}
-            otherName={otherUser?.displayName ?? incomingCall?.display_name ?? 'RedLOVE user'}
+            otherName={otherUser?.displayName ?? incomingCall?.display_name ?? 'RedLove user'}
             localStream={localStream}
             remoteStream={remoteStream}
             muted={callMuted}
@@ -4324,7 +4324,7 @@ export function SettingsScreen() {
   }
 
   function confirmLogout() {
-    Alert.alert('Log out', 'You will need to sign in again to use RedLOVE Today.', [
+    Alert.alert('Log out', 'You will need to sign in again to use RedLove.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log out', style: 'destructive', onPress: () => void logout() },
     ]);
@@ -4420,7 +4420,7 @@ export function SettingsScreen() {
           <SettingsSection title="Legal">
             <SettingsRow icon="shield" label="Privacy" value="Privacy Policy" onPress={() => router.push('/(legal)/privacy' as Href)} />
             <SettingsRow icon="file" label="Terms" value="Terms of Service" onPress={() => router.push('/(legal)/terms' as Href)} />
-            <SettingsRow icon="about" label="About" value="RedLOVE Today mobile" onPress={() => Alert.alert('About RedLOVE Today', 'Version 1.0.0')} />
+            <SettingsRow icon="about" label="About" value="RedLove mobile" onPress={() => Alert.alert('About RedLove', 'Version 1.0.0')} />
           </SettingsSection>
 
           <SettingsSection title="Session">
@@ -4568,7 +4568,7 @@ export function PremiumScreen() {
       <Modal visible={Boolean(pendingPayment)} title="Complete PayPal payment" onClose={() => setPendingPayment(null)} onRequestClose={() => setPendingPayment(null)}>
         <View style={styles.gap}>
           <Text style={styles.bold}>{pendingPayment?.title}</Text>
-          <Text variant="muted">After approving the payment in PayPal, return here and confirm so RedLOVE can capture the order.</Text>
+          <Text variant="muted">After approving the payment in PayPal, return here and confirm so RedLove can capture the order.</Text>
           {pendingPayment?.approvalUrl ? (
             <Button title="Open PayPal again" variant="outline" onPress={() => void openPaymentProvider(pendingPayment.orderId, pendingPayment.approvalUrl)} />
           ) : null}
@@ -4630,7 +4630,7 @@ export function CreditsScreen() {
       <Modal visible={Boolean(pendingPayment)} title="Complete PayPal payment" onClose={() => setPendingPayment(null)} onRequestClose={() => setPendingPayment(null)}>
         <View style={styles.gap}>
           <Text style={styles.bold}>{pendingPayment?.title}</Text>
-          <Text variant="muted">After approving the payment in PayPal, return here and confirm so RedLOVE can capture the order.</Text>
+          <Text variant="muted">After approving the payment in PayPal, return here and confirm so RedLove can capture the order.</Text>
           {pendingPayment?.approvalUrl ? (
             <Button title="Open PayPal again" variant="outline" onPress={() => void openPaymentProvider(pendingPayment.orderId, pendingPayment.approvalUrl)} />
           ) : null}
@@ -4838,9 +4838,9 @@ export function GuardianUserDetailScreen() {
 export function ContentScreen({ kind }: { kind: 'download' | 'showcase' | 'ad' }) {
   useTheme();
   const copy = {
-    download: ['Download', 'Install RedLOVE Today on iOS and Android when store builds are available.'],
-    showcase: ['Showcase', 'Preview the RedLOVE Today mobile experience.'],
-    ad: ['Ad template', 'Campaign creative for RedLOVE Today.'],
+    download: ['Download', 'Install RedLove on iOS and Android when store builds are available.'],
+    showcase: ['Showcase', 'Preview the RedLove mobile experience.'],
+    ad: ['Ad template', 'Campaign creative for RedLove.'],
   }[kind];
   return (
     <ScreenWrapper title={copy[0]}>

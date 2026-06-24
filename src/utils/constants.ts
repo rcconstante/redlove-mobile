@@ -1,4 +1,4 @@
-export const APP_NAME = 'RedLOVE Today';
+export const APP_NAME = 'RedLove';
 
 export const GENDERS = ['man', 'woman', 'trans', 'nonbinary'] as const;
 

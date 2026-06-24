@@ -86,8 +86,8 @@ export const themePalettes: Record<ThemeMode, ThemeColors> = {
 
 export const themeOptions: { mode: ThemeMode; label: string; description: string }[] = [
   { mode: 'light', label: 'White', description: 'Clean bright mode for daily use.' },
-  { mode: 'dark', label: 'Dark', description: 'The original RedLOVE dark look.' },
-  { mode: 'rose', label: 'Rose', description: 'A softer RedLOVE blush theme.' },
+  { mode: 'dark', label: 'Dark', description: 'The original RedLove dark look.' },
+  { mode: 'rose', label: 'Rose', description: 'A softer RedLove blush theme.' },
 ];
 
 export const DEFAULT_THEME_MODE: ThemeMode = 'dark';

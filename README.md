@@ -1,6 +1,6 @@
-# RedLOVE Today Mobile
+# RedLove Mobile
 
-React Native and Expo mobile client for the RedLOVE Today dating platform.
+React Native and Expo mobile client for the RedLove dating platform.
 
 This app ports the existing `RedLovetoday-web` user flows to native iOS and Android while preserving the existing backend API contracts. The current implementation is typed, route-complete for the implemented mobile screens, and wired to the web backend through the service layer in `src/services`.
 

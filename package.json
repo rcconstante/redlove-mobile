@@ -1,5 +1,5 @@
 {
-  "name": "redlove-today-mobile",
+  "name": "redlove-mobile",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
@@ -48,5 +48,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "expo lint"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-webrtc"
+        ]
+      }
+    }
+  }
 }
