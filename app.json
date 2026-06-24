@@ -12,7 +12,8 @@
       "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow RedLove to use your camera for video calls.",
-        "NSMicrophoneUsageDescription": "Allow RedLove to use your microphone for voice calls, video calls, and voice notes."
+        "NSMicrophoneUsageDescription": "Allow RedLove to use your microphone for voice calls, video calls, and voice notes.",
+        "ITSAppUsesNonExemptEncryption": false
       },
       "bitcode": false
     },
