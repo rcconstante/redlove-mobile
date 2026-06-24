@@ -1,0 +1,72 @@
+{
+  "expo": {
+    "name": "RedLOVE Today",
+    "slug": "redlove-today",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "redlove",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/images/icon.png",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow RedLOVE Today to use your camera for video calls.",
+        "NSMicrophoneUsageDescription": "Allow RedLOVE Today to use your microphone for voice calls, video calls, and voice notes."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#13051f",
+        "foregroundImage": "./assets/images/adaptive-icon.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/logo.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#13051f",
+          "android": {
+            "image": "./assets/images/applogo.png",
+            "imageWidth": 180
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow RedLOVE Today to access your photos so you can upload profile pictures.",
+          "cameraPermission": "Allow RedLOVE Today to use your camera so you can take a profile picture."
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Allow RedLOVE Today to use your camera for video calls.",
+          "microphonePermission": "Allow RedLOVE Today to use your microphone for voice and video calls."
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow RedLOVE Today to use your microphone for voice calls, video calls, and voice notes."
+        }
+      ],
+      "expo-asset"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
