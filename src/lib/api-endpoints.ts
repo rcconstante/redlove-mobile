@@ -48,6 +48,10 @@ export const endpoints = {
     nudeStatus: (userId: number) => `/media/nude-status/${userId}`,
     unlockNude: (userId: number) => `/media/unlock-nude/${userId}`,
   },
+  verification: {
+    status: '/verification/status',
+    submit: '/verification/submit',
+  },
   premium: {
     status: '/premium/status',
     plans: '/premium/plans',

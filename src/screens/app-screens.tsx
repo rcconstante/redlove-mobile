@@ -6,14 +6,15 @@ import {
   useAudioPlayer,
   useAudioPlayerStatus,
   useAudioRecorder,
-  useAudioRecorderState,
   type AudioPlayer,
 } from 'expo-audio';
+import { Camera, CameraView, type CameraType } from 'expo-camera';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, KeyboardAvoidingView, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View, type GestureResponderEvent, type LayoutChangeEvent, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Keyboard, KeyboardAvoidingView, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View, type GestureResponderEvent, type LayoutChangeEvent, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 import { SafeArea } from '@/components/layout/safe-area';
@@ -28,7 +29,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Icon } from '@/components/ui/icon';
+import { Icon, type IconName } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { OptionGroup } from '@/components/ui/select';
@@ -51,6 +52,7 @@ import { messagesService } from '@/services/messages.service';
 import { notificationsService, type NotificationThread } from '@/services/notifications.service';
 import { premiumService } from '@/services/premium.service';
 import { usersService } from '@/services/users.service';
+import { verificationService, type VerificationStatus } from '@/services/verification.service';
 import type { GuardianReport, GuardianUserSummary, LikeStats, MediaItem, NotificationItem, ReceivedLike } from '@/types/api.types';
 import type { IncomingCall, Match, Message } from '@/types/chat.types';
 import type { CreditPack, PaymentRecord, PremiumPlan, PremiumStatus } from '@/types/payment.types';
@@ -76,17 +78,33 @@ type PickedImage = {
 
 type PendingChatAttachment = PickedImage & {
   id: string;
-  kind: 'image';
+  kind: 'image' | 'video';
+  messageType: 'image' | 'video' | 'gif';
   previewUri: string;
   remoteUrl?: string;
+};
+
+type ActiveRecording = {
+  kind: 'audio' | 'video';
+  elapsedSeconds: number;
+  cancel: boolean;
 };
 
 type ChatGif = Awaited<ReturnType<typeof messagesService.gifs>>['data'][number];
 type WebRtcModule = typeof import('react-native-webrtc');
 type RtcPeerConnection = InstanceType<WebRtcModule['RTCPeerConnection']>;
 type RtcMediaStream = InstanceType<WebRtcModule['MediaStream']>;
+type RtcMediaStreamTrack = ReturnType<RtcMediaStream['getTracks']>[number];
 type RtcCallPhase = 'idle' | 'calling' | 'active';
 type RtcCallKind = 'audio' | 'video';
+type RtcCameraFacing = 'front' | 'back';
+type CallNoticeTone = 'info' | 'success' | 'error';
+type CallNotice = {
+  title: string;
+  message?: string;
+  tone: CallNoticeTone;
+  icon: IconName;
+};
 
 type LegalContent = {
   title: string;
@@ -110,8 +128,11 @@ const LEGAL_CONTENT: Record<LegalKind, LegalContent> = {
 
 const MATCH_MAKER_SWIPE_THRESHOLD = 90;
 const MATCH_MAKER_SUPERLIKE_THRESHOLD = 85;
+const CHAT_RECORD_CANCEL_THRESHOLD = -86;
+const CHAT_MIN_RECORDING_SECONDS = 1;
+const CHAT_MAX_VIDEO_RECORDING_SECONDS = 60;
 const WEBRTC_NATIVE_BUILD_MESSAGE =
-  'WebRTC native module not found. Voice and video calls require the custom RedLove Expo development build or a production build. Expo Go cannot load react-native-webrtc. If this is already a dev build, rebuild and reinstall it after native dependency changes.';
+  'Calls need the installed RedLove app build. Update or reinstall the latest build to use voice and video calls.';
 
 const MOODS = [
   "Let's hang out",
@@ -156,6 +177,127 @@ const ONBOARDING_CHAT_MESSAGES = [
   { id: 'afrobeats', side: 'left', person: 'male', text: 'A lot of Afrobeats and R&B.', time: '10:24 AM' },
 ] as const;
 
+const ONBOARDING_INTERESTS = [
+  ...INTERESTS,
+  'Yoga',
+  'Nature',
+  'Pets',
+  'Surfing',
+  'Cycling',
+  'Running',
+  'Theatre',
+  'Wine',
+  'Concerts',
+  'Climbing',
+  'Skiing',
+  'Sports',
+  'Classical music',
+  'Mindfulness',
+  'Entrepreneurship',
+  'Sustainability',
+  'Board games',
+  'Streaming',
+  'Beach',
+  'Mountains',
+  'Karaoke',
+  'Sushi',
+  'Festivals',
+  'Homebody',
+  'Science',
+  'Writing',
+] as const;
+
+type ProfileOption = {
+  label: string;
+  value: string;
+};
+
+const PROFILE_ETHNICITY_OPTIONS: ProfileOption[] = [
+  'Asian',
+  'Black',
+  'Latino',
+  'Middle Eastern',
+  'Mixed',
+  'Native American',
+  'South Asian',
+  'White',
+  'Other',
+].map((value) => ({ label: value, value }));
+
+const PROFILE_RELIGION_OPTIONS: ProfileOption[] = [
+  'Agnostic',
+  'Atheist',
+  'Buddhist',
+  'Catholic',
+  'Christian',
+  'Hindu',
+  'Jewish',
+  'Muslim',
+  'Spiritual',
+  'Other',
+  'None',
+].map((value) => ({ label: value, value }));
+
+const PROFILE_BODY_TYPE_OPTIONS: ProfileOption[] = [
+  'Slim',
+  'Athletic',
+  'Average',
+  'Curvy',
+  'Muscular',
+  'Plus size',
+  'Petite',
+  'Tall',
+].map((value) => ({ label: value, value }));
+
+const PROFILE_RELATIONSHIP_STATUS_OPTIONS: ProfileOption[] = [
+  { value: 'single', label: 'Single' },
+  { value: 'in a relationship', label: 'In a Relationship' },
+  { value: 'divorced', label: 'Divorced' },
+  { value: 'separated', label: 'Separated' },
+  { value: 'widowed', label: 'Widowed' },
+  { value: 'open relationship', label: 'Open Relationship' },
+];
+
+const PROFILE_LOOKING_FOR_OPTIONS: ProfileOption[] = [
+  { value: 'sex', label: 'Hookups / Sex' },
+  { value: 'flirt', label: 'Flirting' },
+  { value: 'date', label: 'Dating' },
+  { value: 'relationship', label: 'Relationship' },
+  { value: 'love', label: 'Love' },
+  { value: 'marriage', label: 'Marriage' },
+  { value: 'friendship', label: 'Friendship' },
+];
+
+const PROFILE_CHILDREN_STATUS_OPTIONS: ProfileOption[] = [
+  "Don't have children",
+  'Have children',
+  'Want children someday',
+  'Want children now',
+  "Don't want children",
+].map((value) => ({ label: value, value }));
+
+const PROFILE_SMOKING_OPTIONS: ProfileOption[] = [
+  { value: 'I smoke', label: 'I smoke' },
+  { value: 'I occasionally smoke', label: 'Occasionally' },
+  { value: "I don't smoke", label: "I don't smoke" },
+];
+
+const PROFILE_DRINKING_OPTIONS: ProfileOption[] = [
+  { value: 'I drink', label: 'I drink' },
+  { value: 'I occasionally drink', label: 'Occasionally' },
+  { value: "I don't drink", label: "I don't drink" },
+];
+
+const PROFILE_VERIFICATION_CHALLENGES = [
+  'Show a peace sign',
+  'Give a thumbs up',
+  'Wave at the camera',
+  'Make a phone sign',
+  'Make an open hand, palm facing camera',
+  'Cross your fingers',
+  'Make an OK sign',
+] as const;
+
 function Loadable({ loading, error, children }: LoadableProps) {
   if (loading) return <LoadingSpinner />;
   if (error) return <EmptyState title="Could not load" message={error} />;
@@ -169,8 +311,8 @@ function ErrorText({ message }: { message: string | null }) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={styles.section}>
-      <Text variant="heading">{title}</Text>
+    <View style={styles.profileFormSection}>
+      <Text style={styles.profileFormSectionTitle}>{title}</Text>
       {children}
     </View>
   );
@@ -182,6 +324,85 @@ function Field({ label, value }: { label: string; value?: string | number | bool
     <View style={styles.field}>
       <Text variant="label">{label}</Text>
       <Text>{rendered}</Text>
+    </View>
+  );
+}
+
+function displayLabel(value?: string | null) {
+  if (!value) return 'Item';
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function notificationIcon(type: string): IconName {
+  const normalized = type.toLowerCase();
+  if (normalized.includes('payment') || normalized.includes('premium')) return 'payments';
+  if (normalized.includes('match') || normalized.includes('like')) return 'heart';
+  if (normalized.includes('security') || normalized.includes('verify')) return 'shield';
+  if (normalized.includes('message') || normalized.includes('reply')) return 'mail';
+  return 'bell';
+}
+
+function ProfileSelect({
+  label,
+  value,
+  options,
+  onChange,
+  placeholder = 'Select',
+}: {
+  label: string;
+  value: string;
+  options: readonly ProfileOption[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
+  const [open, setOpen] = useState(false);
+  const selected = options.find((option) => option.value === value);
+
+  return (
+    <View style={styles.profileSelectField}>
+      <Text variant="label">{label}</Text>
+      <Pressable accessibilityRole="button" onPress={() => setOpen(true)} style={({ pressed }) => [styles.profileSelectButton, pressed ? styles.pressedFade : null]}>
+        <Text style={[styles.profileSelectValue, selected ? null : styles.profileSelectPlaceholder]} numberOfLines={1}>
+          {selected?.label ?? placeholder}
+        </Text>
+        <Icon name="chevron-down" size={18} color={colors.textMuted} />
+      </Pressable>
+      <Modal visible={open} title={label} onClose={() => setOpen(false)} onRequestClose={() => setOpen(false)}>
+        <ScrollView style={styles.profileSelectList} contentContainerStyle={styles.profileSelectListContent}>
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <Pressable
+                key={option.value}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                onPress={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                style={[styles.profileSelectOption, active ? styles.profileSelectOptionActive : null]}
+              >
+                <Text style={[styles.profileSelectOptionText, active ? styles.profileSelectOptionTextActive : null]}>{option.label}</Text>
+                {active ? <Icon name="check" size={17} color={colors.primary} strokeWidth={3} /> : null}
+              </Pressable>
+            );
+          })}
+          <Button
+            title="Clear selection"
+            variant="ghost"
+            onPress={() => {
+              onChange('');
+              setOpen(false);
+            }}
+          />
+        </ScrollView>
+      </Modal>
     </View>
   );
 }
@@ -282,6 +503,10 @@ function mimeFromUri(uri: string): string {
   if (clean.endsWith('.png')) return 'image/png';
   if (clean.endsWith('.webp')) return 'image/webp';
   if (clean.endsWith('.gif')) return 'image/gif';
+  if (clean.endsWith('.mov')) return 'video/quicktime';
+  if (clean.endsWith('.webm')) return 'video/webm';
+  if (clean.endsWith('.m4v')) return 'video/x-m4v';
+  if (clean.endsWith('.mp4')) return 'video/mp4';
   return 'image/jpeg';
 }
 
@@ -289,6 +514,10 @@ function extensionFromMime(mime: string): string {
   if (mime === 'image/png') return 'png';
   if (mime === 'image/webp') return 'webp';
   if (mime === 'image/gif') return 'gif';
+  if (mime === 'video/quicktime') return 'mov';
+  if (mime === 'video/webm') return 'webm';
+  if (mime === 'video/x-m4v') return 'm4v';
+  if (mime.startsWith('video/')) return 'mp4';
   return 'jpg';
 }
 
@@ -296,6 +525,22 @@ function pickedImageFromAsset(asset: ImagePicker.ImagePickerAsset, prefix = 'pro
   const type = asset.mimeType ?? mimeFromUri(asset.uri);
   const name = asset.fileName?.trim() || `${prefix}-${Date.now()}.${extensionFromMime(type)}`;
   return { uri: asset.uri, name, type };
+}
+
+function chatAttachmentFromAsset(asset: ImagePicker.ImagePickerAsset, index: number): PendingChatAttachment {
+  const type = asset.mimeType ?? mimeFromUri(asset.uri);
+  const isVideo = type.startsWith('video/') || asset.type === 'video';
+  const prefix = isVideo ? 'chat-video' : 'chat-photo';
+  const name = asset.fileName?.trim() || `${prefix}-${Date.now()}-${index}.${extensionFromMime(type)}`;
+  return {
+    id: `${Date.now()}-${index}-${asset.assetId ?? asset.uri}`,
+    uri: asset.uri,
+    name,
+    type,
+    kind: isVideo ? 'video' : 'image',
+    messageType: isVideo ? 'video' : 'image',
+    previewUri: asset.uri,
+  };
 }
 
 function formatChatTime(iso: string): string {
@@ -336,29 +581,50 @@ async function requestPickedImage(source: 'library' | 'camera'): Promise<PickedI
   return pickedImageFromAsset(result.assets[0]);
 }
 
-async function requestChatImages(limit: number): Promise<PendingChatAttachment[]> {
+async function requestVerificationSelfieData(): Promise<string | null> {
+  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) {
+    throw new Error('Camera access is required to verify your profile.');
+  }
+
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ['images'],
+    allowsEditing: true,
+    aspect: [4, 3],
+    base64: true,
+    quality: 0.55,
+  });
+
+  if (result.canceled || !result.assets[0]) return null;
+  const asset = result.assets[0];
+  if (!asset.base64) {
+    throw new Error('Could not read the selfie image. Please retake it.');
+  }
+
+  const mime = asset.mimeType ?? mimeFromUri(asset.uri);
+  const dataUrl = `data:${mime};base64,${asset.base64}`;
+  if (dataUrl.length > 600_000) {
+    throw new Error('Selfie image is too large. Please retake it closer to your face with less background.');
+  }
+
+  return dataUrl;
+}
+
+async function requestChatMedia(limit: number): Promise<PendingChatAttachment[]> {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) {
-    throw new Error('Photo library access is required to attach a chat photo.');
+    throw new Error('Photo library access is required to attach chat media.');
   }
 
   const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ['images'],
+    mediaTypes: ['images', 'videos'],
     allowsMultipleSelection: limit > 1,
     selectionLimit: Math.max(1, limit),
     quality: 0.9,
   });
 
   if (result.canceled) return [];
-  return result.assets.slice(0, limit).map((asset, index) => {
-    const picked = pickedImageFromAsset(asset, 'chat-photo');
-    return {
-      ...picked,
-      id: `${Date.now()}-${index}-${asset.assetId ?? asset.uri}`,
-      kind: 'image',
-      previewUri: asset.uri,
-    };
-  });
+  return result.assets.slice(0, limit).map(chatAttachmentFromAsset);
 }
 
 function serializeRtcDescription(description: { type?: string; sdp?: string } | null | undefined): string {
@@ -376,7 +642,19 @@ function parseRtcPayload<T = any>(payload: string): T {
   }
 }
 
-function waitForIceGatheringComplete(peer: RtcPeerConnection, timeoutMs = 3500): Promise<void> {
+function callFailureMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof Error)) return fallback;
+  if (!err.message || err.message === WEBRTC_NATIVE_BUILD_MESSAGE) return WEBRTC_NATIVE_BUILD_MESSAGE;
+  return err.message;
+}
+
+function formatCallDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const remainingSeconds = (seconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${remainingSeconds}`;
+}
+
+function waitForIceGatheringComplete(peer: RtcPeerConnection, timeoutMs = 6000): Promise<void> {
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
     const eventTarget = peer as unknown as {
@@ -1131,6 +1409,8 @@ export function OnboardingInterestsScreen() {
   const [error, setError] = useState<string | null>(null);
   const minimumInterests = 3;
   const canContinue = selected.length >= minimumInterests;
+  const remainingInterests = Math.max(0, minimumInterests - selected.length);
+  const progress = Math.min(1, selected.length / minimumInterests);
 
   function toggle(interest: string) {
     setSelected((current) => (current.includes(interest) ? current.filter((item) => item !== interest) : [...current, interest]));
@@ -1155,51 +1435,121 @@ export function OnboardingInterestsScreen() {
   }
 
   return (
-    <ScreenWrapper title="Choose interests" subtitle="Pick a few signals so your profile feels personal from the start.">
-      <Card style={styles.interestsHero}>
-        <Text variant="heading" style={styles.centerText}>
-          What are you into?
-        </Text>
-        <Text variant="muted" style={styles.centerText}>
-          Select at least {minimumInterests}. You can change these later.
-        </Text>
-        <View style={styles.interestCountPill}>
-          <Text style={styles.interestCountText}>
-            {selected.length}/{INTERESTS.length} selected
+    <ScreenWrapper contentStyle={styles.onboardingSetupScreen}>
+      <View style={styles.onboardingSetupHeader}>
+        <View style={styles.onboardingStepRow}>
+          <View style={styles.onboardingStepIcon}>
+            <Icon name="spark" size={18} color={colors.primary} />
+          </View>
+          <Text style={styles.onboardingStepText}>Step 2 of 2</Text>
+        </View>
+
+        <View style={styles.onboardingSetupCopy}>
+          <Text style={styles.onboardingSetupTitle}>Choose what shapes your matches</Text>
+          <Text style={styles.onboardingSetupBody}>Pick interests that feel true to you. These signals help RedLove start with better match context.</Text>
+        </View>
+
+        <View style={styles.onboardingProgressBlock}>
+          <View style={styles.onboardingProgressTrack}>
+            <View style={[styles.onboardingProgressFill, { width: `${progress * 100}%` }]} />
+          </View>
+          <Text style={styles.onboardingProgressText}>
+            {remainingInterests > 0 ? `${remainingInterests} more to continue` : `${selected.length} selected`}
           </Text>
         </View>
-      </Card>
-      <View style={styles.interestGrid}>
-        {INTERESTS.map((interest) => {
-          const active = selected.includes(interest);
-          return (
-            <Pressable
-              key={interest}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-              onPress={() => toggle(interest)}
-              style={[styles.interestChip, active ? styles.interestChipActive : null]}
-            >
-              <Text style={[styles.interestChipText, active ? styles.interestChipTextActive : null]}>{interest}</Text>
-            </Pressable>
-          );
-        })}
       </View>
-      <ErrorText message={error} />
-      <Button title="Continue" fullWidth disabled={!canContinue} loading={loading} onPress={submit} />
+
+      <View style={styles.interestsPanel}>
+        <View style={styles.interestsPanelHeader}>
+          <View style={styles.interestsPanelCopy}>
+            <Text style={styles.interestsPanelTitle}>What are you into?</Text>
+            <Text style={styles.interestsPanelSubtitle}>Select at least {minimumInterests}. You can change these later.</Text>
+          </View>
+          <View style={styles.interestCountPill}>
+            <Text style={styles.interestCountText}>
+              {selected.length}/{ONBOARDING_INTERESTS.length}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.interestGrid}>
+          {ONBOARDING_INTERESTS.map((interest) => {
+            const active = selected.includes(interest);
+            return (
+              <Pressable
+                key={interest}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                onPress={() => toggle(interest)}
+                style={({ pressed }) => [styles.interestChip, active ? styles.interestChipActive : null, pressed ? styles.interestChipPressed : null]}
+              >
+                <Text style={[styles.interestChipText, active ? styles.interestChipTextActive : null]}>{interest}</Text>
+                {active ? (
+                  <View style={styles.interestChipCheck}>
+                    <Icon name="check" size={11} color={colors.primary} strokeWidth={3} />
+                  </View>
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      <View style={styles.onboardingFooterActions}>
+        <ErrorText message={error} />
+        <Button title="Continue" fullWidth disabled={!canContinue} loading={loading} onPress={submit} style={styles.onboardingPrimaryButton} />
+        <Button title="Skip for now" fullWidth variant="ghost" disabled={loading} onPress={() => router.replace('/(onboarding)/welcome')} />
+      </View>
     </ScreenWrapper>
   );
 }
 
 export function OnboardingWelcomeScreen() {
   useTheme();
+  const { user } = useAuth();
+  const selectedInterestsCount = user?.interests.length ?? 0;
+  const welcomeStats: { icon: IconName; label: string; value: string; tone: 'primary' | 'secondary' | 'warning' }[] = [
+    { icon: 'eye', label: 'Profile visibility', value: 'Live', tone: 'primary' },
+    { icon: 'heart', label: 'Match signals', value: selectedInterestsCount > 0 ? `${selectedInterestsCount} selected` : 'Ready', tone: 'secondary' },
+    { icon: 'bolt', label: 'Discovery status', value: 'Ready', tone: 'warning' },
+  ];
+
   return (
-    <ScreenWrapper title="Welcome">
-      <Card style={styles.gap}>
-        <Text variant="heading">Your profile is ready.</Text>
-        <Text variant="muted">Start discovering people who match your preferences.</Text>
-      </Card>
-      <Button title="Go to Discover" onPress={() => router.replace('/(tabs)/discover')} />
+    <ScreenWrapper contentStyle={styles.onboardingWelcomeScreen}>
+      <View style={styles.onboardingWelcomeHero}>
+        <View style={styles.welcomePulseWrap}>
+          <View style={styles.welcomePulseOuter} />
+          <View style={styles.welcomePulseInner} />
+          <View style={styles.welcomeHeartCircle}>
+            <Icon name="heart" size={38} color={colors.white} />
+          </View>
+        </View>
+
+        <Text style={styles.welcomeTitle}>Your profile is live</Text>
+        <Text style={styles.welcomeBody}>You are ready to start discovering people who match your preferences and profile signals.</Text>
+      </View>
+
+      <View style={styles.welcomeStatsList}>
+        {welcomeStats.map((stat) => {
+          const statColor = stat.tone === 'primary' ? colors.primary : stat.tone === 'secondary' ? colors.secondary : colors.warning;
+          return (
+            <Card key={stat.label} style={styles.welcomeStatCard}>
+              <View style={[styles.welcomeStatIcon, { borderColor: statColor, backgroundColor: `${statColor}1A` }]}>
+                <Icon name={stat.icon} size={20} color={statColor} />
+              </View>
+              <View style={styles.welcomeStatCopy}>
+                <Text style={styles.welcomeStatLabel}>{stat.label}</Text>
+                <Text style={[styles.welcomeStatValue, { color: statColor }]}>{stat.value}</Text>
+              </View>
+            </Card>
+          );
+        })}
+      </View>
+
+      <View style={styles.welcomeActionBlock}>
+        <Button title="Start Discovering" fullWidth onPress={() => router.replace('/(tabs)/discover')} style={styles.onboardingPrimaryButton} />
+        <Text style={styles.welcomeFootnote}>You can edit photos, interests, and preferences anytime from your profile.</Text>
+      </View>
     </ScreenWrapper>
   );
 }
@@ -2265,8 +2615,9 @@ function MatchesEmptyState() {
 
 export function ChatScreen() {
   useTheme();
-  const params = useLocalSearchParams<{ matchId?: string }>();
+  const params = useLocalSearchParams<{ matchId?: string; acceptCallId?: string }>();
   const matchId = numericParam(params.matchId);
+  const acceptedCallId = numericParam(params.acceptCallId);
   const { user } = useAuth();
   const notifications = useContext(NotificationContext);
   const loadMessages = useCallback(() => (matchId ? messagesService.thread(matchId) : Promise.resolve([])), [matchId]);
@@ -2278,13 +2629,24 @@ export function ChatScreen() {
   const localStreamRef = useRef<RtcMediaStream | null>(null);
   const remoteStreamRef = useRef<RtcMediaStream | null>(null);
   const ringtoneRef = useRef<AudioPlayer | null>(null);
+  const videoCameraRef = useRef<CameraView | null>(null);
+  const callNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callIdRef = useRef<number | null>(null);
   const callStartedAtRef = useRef<number | null>(null);
   const iceLastIdRef = useRef(0);
   const pendingIceRef = useRef<string[]>([]);
   const isCallerRef = useRef(false);
+  const audioHoldActiveRef = useRef(false);
+  const videoHoldActiveRef = useRef(false);
+  const voiceRecordingActiveRef = useRef(false);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingCancelRef = useRef(false);
+  const videoRecordingActiveRef = useRef(false);
+  const sentReofferRef = useRef(false);
+  const lastProcessedReofferRef = useRef<string | null>(null);
+  const callKindRef = useRef<RtcCallKind>('audio');
   const voiceRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const voiceRecorderState = useAudioRecorderState(voiceRecorder, 250);
   const [text, setText] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingChatAttachment[]>([]);
   const [viewOnce, setViewOnce] = useState(false);
@@ -2292,13 +2654,20 @@ export function ChatScreen() {
   const [lightboxUri, setLightboxUri] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
+  const [clipSending, setClipSending] = useState(false);
+  const [activeRecording, setActiveRecording] = useState<ActiveRecording | null>(null);
+  const [videoRecorderVisible, setVideoRecorderVisible] = useState(false);
+  const [videoRecorderReady, setVideoRecorderReady] = useState(false);
+  const [videoRecordFacing, setVideoRecordFacing] = useState<CameraType>('front');
   const [callPhase, setCallPhase] = useState<RtcCallPhase>('idle');
   const [callKind, setCallKind] = useState<RtcCallKind>('audio');
   const [localStream, setLocalStream] = useState<RtcMediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<RtcMediaStream | null>(null);
   const [callMuted, setCallMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<RtcCameraFacing>('front');
   const [speakerOn, setSpeakerOn] = useState(false);
+  const [callNotice, setCallNotice] = useState<CallNotice | null>(null);
   const messages = resource.data ?? [];
   const match = matches.data?.find((item) => item.id === matchId) ?? null;
   const otherUser = match?.otherUser ?? null;
@@ -2307,9 +2676,9 @@ export function ChatScreen() {
   const iHaveSent = messages.some((message) => message.senderId === user?.id);
   const theyHaveSent = messages.some((message) => message.senderId !== user?.id);
   const callsUnlocked = iHaveSent && theyHaveSent;
-  const recordingVoice = voiceRecorderState.isRecording;
-  const composerBusy = sending || voiceSending;
-  const canSend = !recordingVoice && (Boolean(text.trim()) || pendingAttachments.length > 0);
+  const recordingActive = Boolean(activeRecording);
+  const composerBusy = sending || voiceSending || clipSending;
+  const canSend = !recordingActive && !videoRecorderVisible && (Boolean(text.trim()) || pendingAttachments.length > 0);
   const setMessagesData = resource.setData;
   const silentRefreshMessages = useCallback(async () => {
     if (!matchId) return;
@@ -2319,6 +2688,58 @@ export function ChatScreen() {
       // Keep the current thread visible if a background poll fails.
     }
   }, [matchId, setMessagesData]);
+
+  const dismissCallNotice = useCallback(() => {
+    if (callNoticeTimerRef.current) {
+      clearTimeout(callNoticeTimerRef.current);
+      callNoticeTimerRef.current = null;
+    }
+    setCallNotice(null);
+  }, []);
+
+  const showCallNotice = useCallback((notice: CallNotice) => {
+    if (callNoticeTimerRef.current) {
+      clearTimeout(callNoticeTimerRef.current);
+    }
+    setCallNotice(notice);
+    callNoticeTimerRef.current = setTimeout(() => {
+      callNoticeTimerRef.current = null;
+      setCallNotice(null);
+    }, 3800);
+  }, []);
+
+  const clearRecordingTimer = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }, []);
+
+  const updateRecordingCancel = useCallback((cancel: boolean) => {
+    recordingCancelRef.current = cancel;
+    setActiveRecording((current) => (current ? { ...current, cancel } : current));
+  }, []);
+
+  const beginRecordingIndicator = useCallback((kind: ActiveRecording['kind']) => {
+    clearRecordingTimer();
+    recordingStartedAtRef.current = Date.now();
+    recordingCancelRef.current = false;
+    setActiveRecording({ kind, elapsedSeconds: 0, cancel: false });
+    recordingTimerRef.current = setInterval(() => {
+      const startedAt = recordingStartedAtRef.current;
+      if (!startedAt) return;
+      setActiveRecording((current) => (
+        current ? { ...current, elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) } : current
+      ));
+    }, 250);
+  }, [clearRecordingTimer]);
+
+  const endRecordingIndicator = useCallback(() => {
+    clearRecordingTimer();
+    recordingStartedAtRef.current = null;
+    recordingCancelRef.current = false;
+    setActiveRecording(null);
+  }, [clearRecordingTimer]);
 
   const loadWebRtc = useCallback(async (): Promise<WebRtcModule> => {
     if (webRtcRef.current) return webRtcRef.current;
@@ -2379,10 +2800,21 @@ export function ChatScreen() {
     });
 
     peerEvents.addEventListener('track', (event: any) => {
-      const stream = event.streams?.[0] as RtcMediaStream | undefined;
-      if (!stream) return;
-      remoteStreamRef.current = stream;
-      setRemoteStream(stream);
+      const eventStream = event.streams?.[0] as RtcMediaStream | undefined;
+      const incomingTrack = event.track as RtcMediaStreamTrack | null | undefined;
+      const incomingTracks = incomingTrack ? [incomingTrack] : (eventStream?.getTracks() ?? []);
+      if (incomingTracks.length === 0) return;
+
+      const mergedTracks: RtcMediaStreamTrack[] = [...(remoteStreamRef.current?.getTracks() ?? [])];
+      incomingTracks.forEach((track) => {
+        if (!mergedTracks.some((current) => current.id === track.id)) {
+          mergedTracks.push(track);
+        }
+      });
+
+      const nextStream = new rtc.MediaStream(mergedTracks) as RtcMediaStream;
+      remoteStreamRef.current = nextStream;
+      setRemoteStream(nextStream);
     });
 
     peerEvents.addEventListener('connectionstatechange', () => {
@@ -2395,6 +2827,40 @@ export function ChatScreen() {
     return peer;
   }, []);
 
+  const addLocalVideoTrack = useCallback(async (rtc: WebRtcModule, peer: RtcPeerConnection, attachToPeer = true): Promise<RtcMediaStreamTrack> => {
+    const currentStream = localStreamRef.current;
+    const existingVideoTrack = currentStream?.getVideoTracks().find((track) => track.readyState !== 'ended');
+    if (existingVideoTrack) return existingVideoTrack;
+
+    const videoStream = (await rtc.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: 'user' },
+    })) as RtcMediaStream;
+    const videoTrack = videoStream.getVideoTracks()[0];
+    if (!videoTrack) {
+      stopRtcStream(videoStream);
+      throw new Error('Could not start the camera for video.');
+    }
+
+    if (!currentStream) {
+      localStreamRef.current = videoStream;
+      setLocalStream(videoStream);
+      if (attachToPeer) {
+        peer.addTrack(videoTrack, videoStream);
+      }
+      return videoTrack;
+    }
+
+    currentStream.addTrack(videoTrack);
+    const hasVideoSender = peer.getSenders().some((sender) => sender.track?.kind === 'video');
+    if (attachToPeer && !hasVideoSender) {
+      peer.addTrack(videoTrack, currentStream);
+    }
+    setLocalStream(new rtc.MediaStream(currentStream.getTracks()) as RtcMediaStream);
+    setCameraFacing('front');
+    return videoTrack;
+  }, []);
+
   const cleanupCall = useCallback(async (notifyBackend: boolean) => {
     const callId = callIdRef.current;
     const startedAt = callStartedAtRef.current;
@@ -2404,6 +2870,9 @@ export function ChatScreen() {
     iceLastIdRef.current = 0;
     pendingIceRef.current = [];
     isCallerRef.current = false;
+    sentReofferRef.current = false;
+    lastProcessedReofferRef.current = null;
+    callKindRef.current = 'audio';
 
     if (notifyBackend && callId) {
       const duration = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : undefined;
@@ -2421,6 +2890,7 @@ export function ChatScreen() {
     setCallPhase('idle');
     setCallMuted(false);
     setCameraOff(false);
+    setCameraFacing('front');
     setSpeakerOn(false);
     await setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false, shouldRouteThroughEarpiece: false }).catch(() => undefined);
     void silentRefreshMessages();
@@ -2439,6 +2909,10 @@ export function ChatScreen() {
   }, []);
 
   useEffect(() => {
+    callKindRef.current = callKind;
+  }, [callKind]);
+
+  useEffect(() => {
     if (!matchId) return undefined;
     const timer = setInterval(() => {
       void silentRefreshMessages();
@@ -2451,6 +2925,16 @@ export function ChatScreen() {
       scrollRef.current?.scrollToEnd({ animated: true });
     });
   }, [messages.length]);
+
+  useEffect(() => {
+    const eventName = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const subscription = Keyboard.addListener(eventName, () => {
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollToEnd({ animated: true });
+      });
+    });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     const refresh = notifications?.refresh;
@@ -2472,9 +2956,28 @@ export function ChatScreen() {
   }, [callPhase, incomingCallId]);
 
   useEffect(() => {
+    const mountedVideoCamera = videoCameraRef.current;
     return () => {
+      clearRecordingTimer();
       stopCallRingtone(ringtoneRef);
+      if (voiceRecordingActiveRef.current) {
+        void voiceRecorder.stop().catch(() => undefined);
+        voiceRecordingActiveRef.current = false;
+      }
+      if (videoRecordingActiveRef.current) {
+        mountedVideoCamera?.stopRecording();
+        videoRecordingActiveRef.current = false;
+      }
       void setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false, shouldRouteThroughEarpiece: false }).catch(() => undefined);
+    };
+  }, [clearRecordingTimer, voiceRecorder]);
+
+  useEffect(() => {
+    return () => {
+      if (callNoticeTimerRef.current) {
+        clearTimeout(callNoticeTimerRef.current);
+        callNoticeTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -2489,7 +2992,12 @@ export function ChatScreen() {
 
         const status = await callsService.status(callId);
         if (status.status === 'declined' || status.status === 'ended') {
-          Alert.alert('Call ended');
+          showCallNotice({
+            title: status.status === 'declined' ? 'Call declined' : 'Call ended',
+            message: status.status === 'declined' ? 'They were unable to answer this time.' : 'The call has ended.',
+            tone: 'info',
+            icon: status.status === 'declined' ? 'close' : 'phone-call',
+          });
           await cleanupCall(false);
           return;
         }
@@ -2498,6 +3006,52 @@ export function ChatScreen() {
           await peer.setRemoteDescription(new rtc.RTCSessionDescription(parseRtcPayload(status.answer)));
           if (!callStartedAtRef.current) callStartedAtRef.current = Date.now();
           setCallPhase('active');
+        }
+
+        const reofferFromCurrentUser = status.reoffer_from_id != null && status.reoffer_from_id === user?.id;
+        if (status.reoffer && status.reoffer !== lastProcessedReofferRef.current && !reofferFromCurrentUser) {
+          lastProcessedReofferRef.current = status.reoffer;
+          const reofferPayload = parseRtcPayload<{ type?: string; sdp?: string }>(status.reoffer);
+          if (!reofferPayload.type || !reofferPayload.sdp) {
+            throw new Error('Received invalid call signaling data.');
+          }
+          const reoffer = { type: reofferPayload.type, sdp: reofferPayload.sdp };
+          const isVideoUpgrade = callKindRef.current !== 'video' && Boolean(reoffer.sdp?.includes('m=video'));
+
+          await peer.setRemoteDescription(new rtc.RTCSessionDescription(reoffer));
+
+          if (isVideoUpgrade) {
+            try {
+              const videoTrack = await addLocalVideoTrack(rtc, peer, false);
+              const videoTransceiver = peer.getTransceivers().find((transceiver) => transceiver.receiver.track?.kind === 'video');
+              if (videoTransceiver) {
+                await videoTransceiver.sender.replaceTrack(videoTrack);
+              } else if (localStreamRef.current) {
+                peer.addTrack(videoTrack, localStreamRef.current);
+              }
+              callKindRef.current = 'video';
+              setCallKind('video');
+              setSpeakerOn(true);
+              await applyCallAudioMode(true);
+            } catch {
+              showCallNotice({
+                title: 'Camera unavailable',
+                message: 'The call will continue without your video.',
+                tone: 'error',
+                icon: 'video',
+              });
+            }
+          }
+
+          const reanswer = await peer.createAnswer();
+          await peer.setLocalDescription(reanswer);
+          await waitForIceGatheringComplete(peer);
+          await callsService.reanswer(callId, serializeRtcDescription(peer.localDescription ?? reanswer));
+        }
+
+        if (status.reanswer && sentReofferRef.current && reofferFromCurrentUser) {
+          sentReofferRef.current = false;
+          await peer.setRemoteDescription(new rtc.RTCSessionDescription(parseRtcPayload(status.reanswer)));
         }
 
         const ice = await callsService.iceCandidates(callId, iceLastIdRef.current);
@@ -2510,21 +3064,35 @@ export function ChatScreen() {
     }, 1400);
 
     return () => clearInterval(timer);
-  }, [callPhase, cleanupCall]);
+  }, [addLocalVideoTrack, applyCallAudioMode, callPhase, cleanupCall, showCallNotice, user?.id]);
+
+  useEffect(() => {
+    if (callPhase !== 'calling' || !isCallerRef.current) return undefined;
+    const timer = setTimeout(() => {
+      showCallNotice({
+        title: 'No answer',
+        message: 'The call timed out.',
+        tone: 'info',
+        icon: 'phone-call',
+      });
+      void cleanupCall(true);
+    }, 90_000);
+    return () => clearTimeout(timer);
+  }, [callPhase, cleanupCall, showCallNotice]);
 
   async function chooseAttachment() {
     const remaining = 10 - pendingAttachments.length;
     if (remaining <= 0) {
-      Alert.alert('Attachment limit', 'You can send up to 10 photos at once.');
+      Alert.alert('Attachment limit', 'You can send up to 10 attachments at once.');
       return;
     }
     try {
-      const picked = await requestChatImages(remaining);
+      const picked = await requestChatMedia(remaining);
       if (picked.length > 0) {
         setPendingAttachments((current) => [...current, ...picked].slice(0, 10));
       }
     } catch (err) {
-      Alert.alert('Photo picker failed', err instanceof Error ? err.message : 'Try again later.');
+      Alert.alert('Media picker failed', err instanceof Error ? err.message : 'Try again later.');
     }
   }
 
@@ -2540,6 +3108,7 @@ export function ChatScreen() {
         name: safeName,
         type: 'image/gif',
         kind: 'image' as const,
+        messageType: 'gif' as const,
         previewUri,
         remoteUrl: url,
       },
@@ -2560,7 +3129,7 @@ export function ChatScreen() {
         if (attachment.remoteUrl) {
           await messagesService.send(matchId, {
             mediaUrl: attachment.remoteUrl,
-            messageType: 'image',
+            messageType: attachment.messageType,
             isNude: false,
             isViewOnce: viewOnce,
           });
@@ -2577,7 +3146,7 @@ export function ChatScreen() {
         });
         await messagesService.send(matchId, {
           mediaUrl: uploaded.url,
-          messageType: 'image',
+          messageType: attachment.messageType,
           isNude: false,
           isViewOnce: viewOnce,
         });
@@ -2594,7 +3163,26 @@ export function ChatScreen() {
     }
   }
 
-  async function startVoiceRecording() {
+  const sendRecordedChatMedia = useCallback(async (uri: string, input: { name: string; type: string; messageType: 'audio' | 'video' }) => {
+    if (!matchId) return;
+    const uploaded = await mediaService.upload({
+      uri,
+      name: input.name,
+      type: input.type,
+      isNude: false,
+      isProfilePhoto: false,
+      context: 'chat',
+    });
+    await messagesService.send(matchId, {
+      mediaUrl: uploaded.url,
+      messageType: input.messageType,
+      isNude: false,
+      isViewOnce: false,
+    });
+    await silentRefreshMessages();
+  }, [matchId, silentRefreshMessages]);
+
+  const startVoiceRecording = useCallback(async () => {
     if (composerBusy || callPhase !== 'idle') return;
     if (!matchId) return;
     try {
@@ -2611,58 +3199,197 @@ export function ChatScreen() {
       });
       await voiceRecorder.prepareToRecordAsync();
       voiceRecorder.record();
+      voiceRecordingActiveRef.current = true;
+      beginRecordingIndicator('audio');
+      if (!audioHoldActiveRef.current) {
+        await voiceRecorder.stop();
+        voiceRecordingActiveRef.current = false;
+        endRecordingIndicator();
+        await setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false }).catch(() => undefined);
+      }
     } catch (err) {
       Alert.alert('Could not record', err instanceof Error ? err.message : 'Please check microphone permissions.');
+      voiceRecordingActiveRef.current = false;
+      endRecordingIndicator();
       await setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false }).catch(() => undefined);
     }
-  }
+  }, [beginRecordingIndicator, callPhase, composerBusy, endRecordingIndicator, matchId, voiceRecorder]);
 
-  async function stopVoiceRecording() {
-    if (!recordingVoice || !matchId) return;
-    setVoiceSending(true);
+  const stopVoiceRecording = useCallback(async (cancelled = false) => {
+    if (!voiceRecordingActiveRef.current || !matchId) return;
+    const elapsedSeconds = recordingStartedAtRef.current ? (Date.now() - recordingStartedAtRef.current) / 1000 : 0;
+    const shouldCancel = cancelled || elapsedSeconds < CHAT_MIN_RECORDING_SECONDS;
+    if (!shouldCancel) setVoiceSending(true);
     try {
       await voiceRecorder.stop();
       const uri = voiceRecorder.uri;
+      voiceRecordingActiveRef.current = false;
+      endRecordingIndicator();
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true, shouldPlayInBackground: false }).catch(() => undefined);
+      if (shouldCancel) return;
       if (!uri) throw new Error('The voice note could not be saved.');
-      const uploaded = await mediaService.upload({
-        uri,
+      await sendRecordedChatMedia(uri, {
         name: `voice-note-${Date.now()}.m4a`,
         type: 'audio/mp4',
-        isNude: false,
-        isProfilePhoto: false,
-        context: 'chat',
-      });
-      await messagesService.send(matchId, {
-        mediaUrl: uploaded.url,
         messageType: 'audio',
-        isNude: false,
-        isViewOnce: false,
       });
-      await silentRefreshMessages();
     } catch (err) {
-      Alert.alert('Could not send voice note', err instanceof Error ? err.message : 'Please try again.');
+      voiceRecordingActiveRef.current = false;
+      endRecordingIndicator();
+      if (!shouldCancel) {
+        Alert.alert('Could not send voice note', err instanceof Error ? err.message : 'Please try again.');
+      }
     } finally {
       setVoiceSending(false);
       await setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false }).catch(() => undefined);
     }
+  }, [endRecordingIndicator, matchId, sendRecordedChatMedia, voiceRecorder]);
+
+  async function openVideoRecorder() {
+    if (composerBusy || callPhase !== 'idle') return;
+    if (!matchId) return;
+    try {
+      const [cameraPermission, microphonePermission] = await Promise.all([
+        Camera.requestCameraPermissionsAsync(),
+        Camera.requestMicrophonePermissionsAsync(),
+      ]);
+      if (!cameraPermission.granted || !microphonePermission.granted) {
+        Alert.alert('Camera permission needed', 'Allow camera and microphone access to record video clips.');
+        return;
+      }
+      setVideoRecordFacing('front');
+      setVideoRecorderReady(false);
+      setVideoRecorderVisible(true);
+    } catch (err) {
+      Alert.alert('Could not open camera', err instanceof Error ? err.message : 'Please check camera permissions.');
+    }
   }
 
-  async function toggleVoiceRecording() {
-    if (recordingVoice) {
-      await stopVoiceRecording();
+  function closeVideoRecorder() {
+    if (videoRecordingActiveRef.current) {
+      stopVideoRecording(true);
       return;
     }
-    await startVoiceRecording();
+    setVideoRecorderVisible(false);
+    setVideoRecorderReady(false);
+    endRecordingIndicator();
   }
+
+  const startVideoRecording = useCallback(async () => {
+    if (!videoRecorderReady || videoRecordingActiveRef.current || clipSending || callPhase !== 'idle') return;
+    const camera = videoCameraRef.current;
+    if (!camera) return;
+    try {
+      videoRecordingActiveRef.current = true;
+      beginRecordingIndicator('video');
+      const recording = camera.recordAsync({
+        maxDuration: CHAT_MAX_VIDEO_RECORDING_SECONDS,
+        maxFileSize: 80_000_000,
+      });
+      if (!videoHoldActiveRef.current) {
+        recordingCancelRef.current = true;
+        camera.stopRecording();
+      }
+      const result = await recording;
+      const cancelled = recordingCancelRef.current;
+      videoRecordingActiveRef.current = false;
+      const elapsedSeconds = recordingStartedAtRef.current ? (Date.now() - recordingStartedAtRef.current) / 1000 : 0;
+      const shouldCancel = cancelled || elapsedSeconds < CHAT_MIN_RECORDING_SECONDS;
+      endRecordingIndicator();
+      if (shouldCancel || !result?.uri) {
+        if (shouldCancel) setVideoRecorderVisible(false);
+        return;
+      }
+      setClipSending(true);
+      setVideoRecorderVisible(false);
+      await sendRecordedChatMedia(result.uri, {
+        name: `video-clip-${Date.now()}.mp4`,
+        type: 'video/mp4',
+        messageType: 'video',
+      });
+    } catch (err) {
+      const cancelled = recordingCancelRef.current;
+      videoRecordingActiveRef.current = false;
+      endRecordingIndicator();
+      if (!cancelled) {
+        Alert.alert('Could not record video', err instanceof Error ? err.message : 'Please try again.');
+      }
+    } finally {
+      setClipSending(false);
+    }
+  }, [beginRecordingIndicator, callPhase, clipSending, endRecordingIndicator, sendRecordedChatMedia, videoRecorderReady]);
+
+  const stopVideoRecording = useCallback((cancelled = false) => {
+    if (!videoRecordingActiveRef.current) return;
+    recordingCancelRef.current = cancelled;
+    setActiveRecording((current) => (current ? { ...current, cancel: cancelled } : current));
+    videoCameraRef.current?.stopRecording();
+  }, []);
+
+  function flipVideoRecorderCamera() {
+    if (videoRecordingActiveRef.current) return;
+    setVideoRecordFacing((current) => (current === 'front' ? 'back' : 'front'));
+  }
+
+  const audioRecordDisabled = sending || voiceSending || clipSending || callPhase !== 'idle' || videoRecorderVisible;
+  const audioRecordPanResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => !audioRecordDisabled,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      audioHoldActiveRef.current = true;
+      updateRecordingCancel(false);
+      void startVoiceRecording();
+    },
+    onPanResponderMove: (_event, gesture) => {
+      updateRecordingCancel(gesture.dx <= CHAT_RECORD_CANCEL_THRESHOLD);
+    },
+    onPanResponderRelease: (_event, gesture) => {
+      audioHoldActiveRef.current = false;
+      void stopVoiceRecording(recordingCancelRef.current || gesture.dx <= CHAT_RECORD_CANCEL_THRESHOLD);
+    },
+    onPanResponderTerminate: () => {
+      audioHoldActiveRef.current = false;
+      void stopVoiceRecording(true);
+    },
+  }), [audioRecordDisabled, startVoiceRecording, stopVoiceRecording, updateRecordingCancel]);
+
+  const videoRecordDisabled = !videoRecorderReady || clipSending || callPhase !== 'idle';
+  const videoRecordPanResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => !videoRecordDisabled,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      videoHoldActiveRef.current = true;
+      updateRecordingCancel(false);
+      void startVideoRecording();
+    },
+    onPanResponderMove: (_event, gesture) => {
+      updateRecordingCancel(gesture.dx <= CHAT_RECORD_CANCEL_THRESHOLD);
+    },
+    onPanResponderRelease: (_event, gesture) => {
+      videoHoldActiveRef.current = false;
+      stopVideoRecording(recordingCancelRef.current || gesture.dx <= CHAT_RECORD_CANCEL_THRESHOLD);
+    },
+    onPanResponderTerminate: () => {
+      videoHoldActiveRef.current = false;
+      stopVideoRecording(true);
+    },
+  }), [startVideoRecording, stopVideoRecording, updateRecordingCancel, videoRecordDisabled]);
 
   async function startCall(kind: RtcCallKind) {
     if (!matchId || callPhase !== 'idle') return;
     if (!callsUnlocked) {
-      Alert.alert('Chat a little first', 'Both of you need to send a message before calling.');
+      showCallNotice({
+        title: 'Chat a little first',
+        message: 'Both of you need to send a message before calling.',
+        tone: 'info',
+        icon: 'phone-call',
+      });
       return;
     }
+    dismissCallNotice();
+    callKindRef.current = kind;
     setCallKind(kind);
+    setCameraFacing('front');
     const initialSpeakerOn = kind === 'video';
     setSpeakerOn(initialSpeakerOn);
     setCallPhase('calling');
@@ -2680,14 +3407,50 @@ export function ChatScreen() {
       await flushPendingIce(order.callId);
     } catch (err) {
       await cleanupCall(false);
-      Alert.alert('Could not start call', err instanceof Error ? err.message : 'Please check camera and microphone permissions.');
+      showCallNotice({
+        title: 'Could not start call',
+        message: callFailureMessage(err, 'Please check camera and microphone permissions.'),
+        tone: 'error',
+        icon: kind === 'video' ? 'video' : 'phone-call',
+      });
     }
   }
 
-  async function answerIncomingCall() {
+  const upgradeToVideo = useCallback(async () => {
+    const callId = callIdRef.current;
+    const peer = pcRef.current;
+    const rtc = webRtcRef.current;
+    if (!callId || !peer || !rtc || callKindRef.current === 'video') return;
+
+    try {
+      await addLocalVideoTrack(rtc, peer);
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIceGatheringComplete(peer);
+      await callsService.reoffer(callId, serializeRtcDescription(peer.localDescription ?? offer));
+      await flushPendingIce(callId);
+      sentReofferRef.current = true;
+      callKindRef.current = 'video';
+      setCallKind('video');
+      setSpeakerOn(true);
+      await applyCallAudioMode(true);
+    } catch (err) {
+      showCallNotice({
+        title: 'Could not add video',
+        message: callFailureMessage(err, 'Please check camera permissions.'),
+        tone: 'error',
+        icon: 'video',
+      });
+    }
+  }, [addLocalVideoTrack, applyCallAudioMode, flushPendingIce, showCallNotice]);
+
+  const answerIncomingCall = useCallback(async () => {
     if (!incomingCall || callPhase !== 'idle') return;
     const kind = incomingCall.call_type;
+    dismissCallNotice();
+    callKindRef.current = kind;
     setCallKind(kind);
+    setCameraFacing('front');
     const initialSpeakerOn = kind === 'video';
     setSpeakerOn(initialSpeakerOn);
     setCallPhase('calling');
@@ -2709,9 +3472,26 @@ export function ChatScreen() {
       await notifications?.refresh();
     } catch (err) {
       await cleanupCall(false);
-      Alert.alert('Could not answer call', err instanceof Error ? err.message : 'Please check camera and microphone permissions.');
+      showCallNotice({
+        title: 'Could not answer call',
+        message: callFailureMessage(err, 'Please check camera and microphone permissions.'),
+        tone: 'error',
+        icon: kind === 'video' ? 'video' : 'phone-call',
+      });
     }
-  }
+  }, [
+    applyCallAudioMode,
+    attachLocalMedia,
+    callPhase,
+    cleanupCall,
+    createPeerConnection,
+    dismissCallNotice,
+    flushPendingIce,
+    incomingCall,
+    loadWebRtc,
+    notifications,
+    showCallNotice,
+  ]);
 
   async function declineIncomingCall() {
     if (!incomingCall) return;
@@ -2740,9 +3520,39 @@ export function ChatScreen() {
     setCameraOff(next);
   }
 
+  function switchCameraFacing() {
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0] as (RtcMediaStreamTrack & { _switchCamera?: () => void }) | undefined;
+    if (!videoTrack || cameraOff) return;
+    try {
+      if (typeof videoTrack._switchCamera === 'function') {
+        videoTrack._switchCamera();
+        setCameraFacing((current) => (current === 'front' ? 'back' : 'front'));
+        return;
+      }
+      showCallNotice({
+        title: 'Camera switch unavailable',
+        message: 'This device does not support switching cameras during a call.',
+        tone: 'info',
+        icon: 'camera',
+      });
+    } catch {
+      showCallNotice({
+        title: 'Camera switch failed',
+        message: 'Could not switch the camera right now.',
+        tone: 'error',
+        icon: 'camera',
+      });
+    }
+  }
+
   async function toggleSpeaker() {
     if (Platform.OS !== 'android') {
-      Alert.alert('Use system audio routing', 'On iPhone, change the call output from Control Center or connected Bluetooth devices.');
+      showCallNotice({
+        title: 'Use system audio routing',
+        message: 'On iPhone, change the output from Control Center or connected Bluetooth devices.',
+        tone: 'info',
+        icon: 'volume',
+      });
       return;
     }
     const next = !speakerOn;
@@ -2751,9 +3561,19 @@ export function ChatScreen() {
       await applyCallAudioMode(next);
     } catch {
       setSpeakerOn(!next);
-      Alert.alert('Speaker unavailable', 'Could not change the call audio route.');
+      showCallNotice({
+        title: 'Speaker unavailable',
+        message: 'Could not change the call audio route.',
+        tone: 'error',
+        icon: 'volume',
+      });
     }
   }
+
+  useEffect(() => {
+    if (!acceptedCallId || !incomingCall || incomingCall.id !== acceptedCallId || callPhase !== 'idle') return;
+    void answerIncomingCall();
+  }, [acceptedCallId, answerIncomingCall, callPhase, incomingCall]);
 
   if (!matchId) return <EmptyState title="Invalid chat" />;
 
@@ -2773,14 +3593,18 @@ export function ChatScreen() {
             remoteStream={remoteStream}
             muted={callMuted}
             cameraOff={cameraOff}
+            cameraFacing={cameraFacing}
             speakerOn={speakerOn}
             onToggleMute={toggleMute}
             onToggleCamera={toggleCamera}
+            onSwitchCamera={switchCameraFacing}
             onToggleSpeaker={() => void toggleSpeaker()}
             onEnd={() => void endCurrentCall()}
+            onUpgradeToVideo={() => void upgradeToVideo()}
           />
         ) : null}
-        <KeyboardAvoidingView style={styles.chatKeyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {callNotice ? <ChatCallNotice notice={callNotice} onDismiss={dismissCallNotice} /> : null}
+        <KeyboardAvoidingView style={styles.chatKeyboard} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
           <View style={styles.chatHeader}>
             <Pressable accessibilityRole="button" accessibilityLabel="Back to matches" onPress={() => router.replace('/(tabs)/matches')} style={styles.chatBackButton}>
               <Icon name="chevron-left" size={22} color={colors.text} />
@@ -2851,13 +3675,13 @@ export function ChatScreen() {
           <View style={styles.chatComposer}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Attach photo"
-              disabled={composerBusy || recordingVoice || pendingAttachments.length >= 10}
+              accessibilityLabel="Attach photo or video"
+              disabled={composerBusy || recordingActive || videoRecorderVisible || pendingAttachments.length >= 10}
               onPress={() => void chooseAttachment()}
               style={({ pressed }) => [
                 styles.chatComposerIcon,
                 pressed ? styles.pressedFade : null,
-                composerBusy || recordingVoice || pendingAttachments.length >= 10 ? styles.disabledButton : null,
+                composerBusy || recordingActive || videoRecorderVisible || pendingAttachments.length >= 10 ? styles.disabledButton : null,
               ]}
             >
               <Icon name="image-plus" size={24} color={colors.textMuted} />
@@ -2865,42 +3689,61 @@ export function ChatScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Choose GIF"
-              disabled={composerBusy || recordingVoice || pendingAttachments.length >= 10}
+              disabled={composerBusy || recordingActive || videoRecorderVisible || pendingAttachments.length >= 10}
               onPress={() => setGifOpen(true)}
               style={({ pressed }) => [
                 styles.chatGifButton,
                 pressed ? styles.pressedFade : null,
-                composerBusy || recordingVoice || pendingAttachments.length >= 10 ? styles.disabledButton : null,
+                composerBusy || recordingActive || videoRecorderVisible || pendingAttachments.length >= 10 ? styles.disabledButton : null,
               ]}
             >
               <Text style={styles.chatGifText}>GIF</Text>
             </Pressable>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder={recordingVoice ? 'Recording voice note...' : 'Type a message...'}
-              placeholderTextColor={colors.textSubtle}
-              multiline
-              editable={!composerBusy && !recordingVoice}
-              style={[styles.chatInput, recordingVoice ? styles.chatInputRecording : null]}
-            />
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={recordingVoice ? 'Stop and send voice note' : 'Record voice note'}
-              accessibilityState={{ selected: recordingVoice, busy: voiceSending, disabled: sending || voiceSending || callPhase !== 'idle' }}
-              disabled={sending || voiceSending || callPhase !== 'idle'}
-              onPress={() => void toggleVoiceRecording()}
+              accessibilityLabel="Record video clip"
+              accessibilityState={{ busy: clipSending, disabled: composerBusy || recordingActive || callPhase !== 'idle' }}
+              disabled={composerBusy || recordingActive || callPhase !== 'idle'}
+              onPress={() => void openVideoRecorder()}
               style={({ pressed }) => [
                 styles.chatComposerIcon,
-                recordingVoice ? styles.chatComposerIconRecording : null,
                 pressed ? styles.pressedFade : null,
-                sending || voiceSending || callPhase !== 'idle' ? styles.disabledButton : null,
+                composerBusy || recordingActive || callPhase !== 'idle' ? styles.disabledButton : null,
+              ]}
+            >
+              {clipSending ? <ActivityIndicator size="small" color={colors.primary} /> : <Icon name="video" size={23} color={colors.textMuted} />}
+            </Pressable>
+            {activeRecording ? (
+              <ChatRecordingBar recording={activeRecording} />
+            ) : (
+              <TextInput
+                value={text}
+                onChangeText={setText}
+                placeholder="Type a message..."
+                placeholderTextColor={colors.textSubtle}
+                multiline
+                editable={!composerBusy && !videoRecorderVisible}
+                onFocus={() => scrollRef.current?.scrollToEnd({ animated: true })}
+                style={styles.chatInput}
+              />
+            )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={activeRecording?.kind === 'audio' ? 'Release to send voice note' : 'Hold to record voice note'}
+              accessibilityState={{ selected: activeRecording?.kind === 'audio', busy: voiceSending, disabled: audioRecordDisabled }}
+              disabled={audioRecordDisabled}
+              {...audioRecordPanResponder.panHandlers}
+              style={({ pressed }) => [
+                styles.chatComposerIcon,
+                activeRecording?.kind === 'audio' ? styles.chatComposerIconRecording : null,
+                pressed ? styles.pressedFade : null,
+                audioRecordDisabled ? styles.disabledButton : null,
               ]}
             >
               {voiceSending ? (
                 <ActivityIndicator size="small" color={colors.primary} />
               ) : (
-                <Icon name={recordingVoice ? 'stop' : 'mic'} size={23} color={recordingVoice ? colors.white : colors.textMuted} />
+                <Icon name={activeRecording?.kind === 'audio' ? 'stop' : 'mic'} size={23} color={activeRecording?.kind === 'audio' ? colors.white : colors.textMuted} />
               )}
             </Pressable>
             <Pressable
@@ -2914,6 +3757,52 @@ export function ChatScreen() {
             </Pressable>
           </View>
         </KeyboardAvoidingView>
+        {videoRecorderVisible ? (
+          <View style={styles.videoRecorderOverlay}>
+            <CameraView
+              ref={videoCameraRef}
+              style={StyleSheet.absoluteFill}
+              facing={videoRecordFacing}
+              mode="video"
+              mirror={videoRecordFacing === 'front'}
+              videoQuality="480p"
+              onCameraReady={() => setVideoRecorderReady(true)}
+              onMountError={(event) => {
+                setVideoRecorderReady(false);
+                Alert.alert('Camera unavailable', event.message || 'Please try again.');
+              }}
+            />
+            <View style={styles.videoRecorderShade} />
+            <View style={styles.videoRecorderTopBar}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close video recorder" onPress={closeVideoRecorder} style={styles.videoRecorderIconButton}>
+                <Icon name="close" size={22} color={colors.white} />
+              </Pressable>
+              <View style={styles.videoRecorderStatusPill}>
+                <View style={[styles.recordingDot, activeRecording?.kind === 'video' ? styles.recordingDotLive : null]} />
+                <Text style={styles.videoRecorderStatusText}>
+                  {clipSending ? 'Sending' : activeRecording?.kind === 'video' ? formatCallDuration(activeRecording.elapsedSeconds) : videoRecorderReady ? 'Ready' : 'Loading'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Flip camera"
+                disabled={activeRecording?.kind === 'video'}
+                onPress={flipVideoRecorderCamera}
+                style={[styles.videoRecorderIconButton, activeRecording?.kind === 'video' ? styles.disabledButton : null]}
+              >
+                <Icon name="camera" size={22} color={colors.white} />
+              </Pressable>
+            </View>
+            <View style={styles.videoRecorderBottomBar}>
+              {activeRecording?.kind === 'video' ? <ChatRecordingBar recording={activeRecording} tone="dark" /> : null}
+              <View style={styles.videoRecordControlRow}>
+                <View {...videoRecordPanResponder.panHandlers} style={[styles.videoRecordButton, activeRecording?.kind === 'video' ? styles.videoRecordButtonActive : null, videoRecordDisabled ? styles.disabledButton : null]}>
+                  {clipSending ? <ActivityIndicator size="small" color={colors.white} /> : <View style={styles.videoRecordButtonCore} />}
+                </View>
+              </View>
+            </View>
+          </View>
+        ) : null}
         <ChatGifPicker visible={gifOpen} onClose={() => setGifOpen(false)} onSelect={addGif} />
         <Modal visible={Boolean(lightboxUri)} title="Photo" onClose={() => setLightboxUri(null)} onRequestClose={() => setLightboxUri(null)}>
           <View style={styles.chatLightbox}>
@@ -2922,6 +3811,19 @@ export function ChatScreen() {
         </Modal>
       </View>
     </SafeArea>
+  );
+}
+
+function ChatRecordingBar({ recording, tone = 'default' }: { recording: ActiveRecording; tone?: 'default' | 'dark' }) {
+  const dark = tone === 'dark';
+  return (
+    <View style={[styles.chatRecordingBar, recording.cancel ? styles.chatRecordingBarCancel : null, dark ? styles.chatRecordingBarDark : null]}>
+      <View style={[styles.recordingDot, styles.recordingDotLive]} />
+      <Text style={[styles.chatRecordingDuration, dark ? styles.chatRecordingDurationDark : null]}>{formatCallDuration(recording.elapsedSeconds)}</Text>
+      <Text style={[styles.chatRecordingHint, recording.cancel ? styles.chatRecordingHintCancel : null, dark ? styles.chatRecordingHintDark : null]} numberOfLines={1}>
+        {recording.cancel ? 'Release to cancel' : 'Slide left to cancel'}
+      </Text>
+    </View>
   );
 }
 
@@ -2943,6 +3845,29 @@ function ChatIncomingCallBanner({ incomingCall, onAccept, onDecline }: { incomin
   );
 }
 
+function ChatCallNotice({ notice, onDismiss }: { notice: CallNotice; onDismiss: () => void }) {
+  const toneStyle = notice.tone === 'error' ? styles.callNoticeIconError : notice.tone === 'success' ? styles.callNoticeIconSuccess : styles.callNoticeIconInfo;
+
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={`${notice.title}${notice.message ? `. ${notice.message}` : ''}`} onPress={onDismiss} style={styles.callNotice}>
+      <View style={[styles.callNoticeIcon, toneStyle]}>
+        <Icon name={notice.icon} size={18} color={colors.white} />
+      </View>
+      <View style={styles.callNoticeCopy}>
+        <Text style={styles.callNoticeTitle} numberOfLines={1}>
+          {notice.title}
+        </Text>
+        {notice.message ? (
+          <Text style={styles.callNoticeMessage} numberOfLines={2}>
+            {notice.message}
+          </Text>
+        ) : null}
+      </View>
+      <Icon name="close" size={16} color={colors.textMuted} />
+    </Pressable>
+  );
+}
+
 function ChatCallOverlay({
   phase,
   kind,
@@ -2951,11 +3876,14 @@ function ChatCallOverlay({
   remoteStream,
   muted,
   cameraOff,
+  cameraFacing,
   speakerOn,
   onToggleMute,
   onToggleCamera,
+  onSwitchCamera,
   onToggleSpeaker,
   onEnd,
+  onUpgradeToVideo,
 }: {
   phase: RtcCallPhase;
   kind: RtcCallKind;
@@ -2964,13 +3892,17 @@ function ChatCallOverlay({
   remoteStream: RtcMediaStream | null;
   muted: boolean;
   cameraOff: boolean;
+  cameraFacing: RtcCameraFacing;
   speakerOn: boolean;
   onToggleMute: () => void;
   onToggleCamera: () => void;
+  onSwitchCamera: () => void;
   onToggleSpeaker: () => void;
   onEnd: () => void;
+  onUpgradeToVideo: () => void;
 }) {
   const [RtcView, setRtcView] = useState<any>(null);
+  const [duration, setDuration] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -2986,6 +3918,16 @@ function ChatCallOverlay({
 
   const remoteUrl = remoteStream?.toURL();
   const localUrl = localStream?.toURL();
+  const statusLabel = phase === 'calling' ? 'Calling...' : formatCallDuration(duration);
+
+  useEffect(() => {
+    if (phase !== 'active') {
+      setDuration(0);
+      return undefined;
+    }
+    const timer = setInterval(() => setDuration((current) => current + 1), 1000);
+    return () => clearInterval(timer);
+  }, [phase]);
 
   return (
     <View style={styles.callOverlay}>
@@ -2997,9 +3939,21 @@ function ChatCallOverlay({
             <Icon name={kind === 'video' ? 'video' : 'phone-call'} size={42} color={colors.white} />
           </View>
           <Text style={styles.callName}>{otherName}</Text>
-          <Text style={styles.callStatus}>{phase === 'calling' ? 'Calling...' : kind === 'video' ? 'Video call' : 'Voice call'}</Text>
+          <Text style={styles.callStatus}>{statusLabel}</Text>
         </View>
       )}
+
+      {kind === 'video' ? (
+        <View style={styles.callVideoHeader}>
+          <Text style={styles.callVideoName} numberOfLines={1}>
+            {otherName}
+          </Text>
+          <View style={styles.callVideoStatusRow}>
+            <Icon name="video" size={13} color="rgba(255,255,255,0.72)" />
+            <Text style={styles.callVideoStatus}>{statusLabel}</Text>
+          </View>
+        </View>
+      ) : null}
 
       {kind === 'video' && RtcView && localUrl && !cameraOff ? (
         <RtcView streamURL={localUrl} style={styles.callLocalVideo} objectFit="cover" />
@@ -3012,13 +3966,23 @@ function ChatCallOverlay({
         <Pressable accessibilityRole="button" accessibilityLabel={speakerOn ? 'Use earpiece' : 'Use speaker'} onPress={onToggleSpeaker} style={[styles.callControlButton, speakerOn ? styles.callControlButtonActive : null]}>
           <Icon name="volume" size={22} color={speakerOn ? colors.primary : colors.white} />
         </Pressable>
+        {kind === 'audio' && phase === 'active' ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Add video" onPress={onUpgradeToVideo} style={styles.callControlButton}>
+            <Icon name="video" size={22} color={colors.white} />
+          </Pressable>
+        ) : null}
         <Pressable accessibilityRole="button" accessibilityLabel="End call" onPress={onEnd} style={[styles.callControlButton, styles.callEndButton]}>
           <Icon name="phone-call" size={22} color={colors.white} />
         </Pressable>
         {kind === 'video' ? (
-          <Pressable accessibilityRole="button" accessibilityLabel={cameraOff ? 'Turn camera on' : 'Turn camera off'} onPress={onToggleCamera} style={styles.callControlButton}>
-            <Icon name="video" size={22} color={cameraOff ? colors.danger : colors.white} />
-          </Pressable>
+          <>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Use ${cameraFacing === 'front' ? 'back' : 'front'} camera`} onPress={onSwitchCamera} style={[styles.callControlButton, cameraOff ? styles.disabledButton : null]}>
+              <Icon name="camera" size={22} color={colors.white} />
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={cameraOff ? 'Turn camera on' : 'Turn camera off'} onPress={onToggleCamera} style={styles.callControlButton}>
+              <Icon name="video" size={22} color={cameraOff ? colors.danger : colors.white} />
+            </Pressable>
+          </>
         ) : null}
       </View>
     </View>
@@ -3070,16 +4034,42 @@ function ChatMessageBubble({ message, mine, onImagePress }: { message: Message; 
           </Pressable>
         ) : null}
         {mediaUrl && message.messageType === 'video' ? (
-          <View style={styles.chatMediaPlaceholder}>
-            <Icon name="video" size={19} color={mine ? colors.white : colors.textMuted} />
-            <Text style={[styles.chatMediaPlaceholderText, mine ? styles.chatBubbleTextMine : null]}>Video message</Text>
-          </View>
+          <ChatVideoMessage uri={mediaUrl} mine={mine} isViewOnce={message.isViewOnce} />
         ) : null}
         {mediaUrl && message.messageType === 'audio' ? (
           <VoiceMessagePlayer uri={mediaUrl} mine={mine} />
         ) : null}
       </View>
       <Text style={[styles.chatBubbleTime, mine ? styles.chatBubbleTimeMine : null]}>{formatChatTime(message.createdAt)}</Text>
+    </View>
+  );
+}
+
+function ChatVideoMessage({ uri, mine, isViewOnce }: { uri: string; mine: boolean; isViewOnce: boolean }) {
+  const player = useVideoPlayer(uri, (instance) => {
+    instance.loop = false;
+  });
+
+  return (
+    <View style={styles.chatVideoWrap}>
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        nativeControls
+        allowsFullscreen
+        contentFit="cover"
+        surfaceType="textureView"
+      />
+      {isViewOnce ? (
+        <View style={styles.chatViewOnceBadge}>
+          <Icon name="eye" size={12} color={colors.white} />
+          <Text style={styles.chatViewOnceText}>Once</Text>
+        </View>
+      ) : null}
+      <View style={styles.chatVideoTypeBadge}>
+        <Icon name="video" size={12} color={colors.white} />
+        <Text style={styles.chatVideoTypeText}>{mine ? 'Sent video' : 'Video'}</Text>
+      </View>
     </View>
   );
 }
@@ -3148,7 +4138,17 @@ function ChatAttachmentTray({
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chatTrayList}>
         {attachments.map((attachment) => (
           <View key={attachment.id} style={styles.chatTrayItem}>
-            <Image source={{ uri: attachment.previewUri }} contentFit="cover" style={StyleSheet.absoluteFill} />
+            {attachment.kind === 'image' ? (
+              <Image source={{ uri: attachment.previewUri }} contentFit="cover" style={StyleSheet.absoluteFill} />
+            ) : (
+              <View style={styles.chatTrayVideoPreview}>
+                <Icon name="video" size={22} color={colors.white} />
+              </View>
+            )}
+            <View style={styles.chatTrayTypeBadge}>
+              <Icon name={attachment.kind === 'video' ? 'video' : 'photo'} size={11} color={colors.white} />
+              <Text style={styles.chatTrayTypeText}>{attachment.messageType === 'gif' ? 'GIF' : attachment.kind === 'video' ? 'Video' : 'Photo'}</Text>
+            </View>
             <Pressable accessibilityRole="button" accessibilityLabel="Remove attachment" onPress={() => onRemove(attachment.id)} style={styles.chatTrayRemove}>
               <Icon name="close" size={14} color={colors.white} />
             </Pressable>
@@ -3307,6 +4307,7 @@ export function NotificationsScreen() {
   const [thread, setThread] = useState<NotificationThread | null>(null);
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
+  const unreadCount = resource.data?.filter((item) => !item.is_read).length ?? 0;
 
   async function openThread(notification: NotificationItem) {
     setThreadId(notification.id);
@@ -3345,31 +4346,53 @@ export function NotificationsScreen() {
   }
 
   return (
-    <ScreenWrapper title="Notifications">
-      <View style={styles.actionRow}>
-        <Button title="Refresh" variant="outline" onPress={resource.reload} />
-        <Button title="Mark all read" variant="outline" onPress={markAllRead} />
-      </View>
+    <ScreenWrapper title="Notifications" subtitle="Likes, matches, messages, and account updates in one place." contentStyle={styles.plainListScreen}>
+      {unreadCount > 0 ? (
+        <Pressable accessibilityRole="button" onPress={markAllRead} style={({ pressed }) => [styles.inlineTextAction, pressed ? styles.pressedFade : null]}>
+          <Text style={styles.inlineTextActionLabel}>Mark all read</Text>
+        </Pressable>
+      ) : null}
+
       <Loadable loading={resource.loading} error={resource.error}>
         {resource.data && resource.data.length > 0 ? (
-          <View style={styles.list}>
+          <View style={styles.plainList}>
             {resource.data.map((notification) => (
-              <Pressable key={notification.id} onPress={() => void openThread(notification)} style={({ pressed }) => [styles.notificationRow, pressed ? styles.pressedFade : null]}>
-                <View style={styles.rowBetween}>
-                  <Text style={styles.bold}>{notification.title}</Text>
-                  {!notification.is_read ? <Badge label="New" tone="danger" /> : null}
+              <Pressable
+                key={notification.id}
+                accessibilityRole="button"
+                onPress={() => void openThread(notification)}
+                style={({ pressed }) => [styles.plainListRow, pressed ? styles.pressedFade : null]}
+              >
+                <View style={styles.plainRowContent}>
+                  <View style={styles.plainRowIcon}>
+                    <Icon name={notificationIcon(notification.type)} size={20} color={colors.primary} />
+                  </View>
+                  <View style={styles.plainRowMain}>
+                    <View style={styles.notificationPlainHeader}>
+                      <View style={styles.notificationPlainTitleWrap}>
+                        {!notification.is_read ? <View style={styles.notificationUnreadDot} /> : null}
+                        <Text style={styles.plainListTitle} numberOfLines={1}>
+                          {notification.title}
+                        </Text>
+                      </View>
+                      <Text style={styles.plainListDate}>{formatDateTime(notification.created_at)}</Text>
+                    </View>
+                    <Text style={styles.plainListBody} numberOfLines={2}>
+                      {notification.message}
+                    </Text>
+                  </View>
                 </View>
-                <Text variant="muted" numberOfLines={3}>
-                  {notification.message}
-                </Text>
-                <Text variant="small" style={styles.subtle}>
-                  {formatDateTime(notification.created_at)}
-                </Text>
               </Pressable>
             ))}
           </View>
         ) : (
-          <EmptyState title="No notifications" />
+          <View style={styles.likesEmpty}>
+            <View style={styles.likesEmptyIcon}>
+              <Icon name="bell" size={32} color={colors.textSubtle} />
+            </View>
+            <Text style={styles.likesEmptyTitle}>No notifications yet</Text>
+            <Text style={styles.likesEmptyText}>Keep being active. New likes, matches, and messages will show here.</Text>
+          </View>
         )}
       </Loadable>
       <Modal
@@ -3671,16 +4694,143 @@ export function ProfileScreen() {
   );
 }
 
+function ProfileVerificationSection() {
+  const { user, setUser } = useAuth();
+  const [status, setStatus] = useState<VerificationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [challenge, setChallenge] = useState('');
+  const [selfieData, setSelfieData] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const nextStatus = await verificationService.status();
+      setStatus(nextStatus);
+      if (user && user.isVerified !== nextStatus.isVerified) {
+        setUser({ ...user, isVerified: nextStatus.isVerified });
+      }
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [setUser, user]);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  function startChallenge() {
+    const pick = PROFILE_VERIFICATION_CHALLENGES[Math.floor(Math.random() * PROFILE_VERIFICATION_CHALLENGES.length)];
+    setChallenge(pick);
+    setSelfieData(null);
+  }
+
+  async function openCamera() {
+    const activeChallenge = challenge || PROFILE_VERIFICATION_CHALLENGES[0];
+    setChallenge(activeChallenge);
+    try {
+      const dataUrl = await requestVerificationSelfieData();
+      if (dataUrl) setSelfieData(dataUrl);
+    } catch (err) {
+      Alert.alert('Camera error', err instanceof Error ? err.message : 'Could not open the camera.');
+    }
+  }
+
+  async function submitVerification() {
+    if (!challenge || !selfieData) return;
+    setSubmitting(true);
+    try {
+      await verificationService.submit(challenge, selfieData);
+      setChallenge('');
+      setSelfieData(null);
+      await loadStatus();
+      Alert.alert('Verification submitted', 'Our team will review your selfie shortly.');
+    } catch (err) {
+      Alert.alert('Verification failed', err instanceof Error ? err.message : 'Try again later.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const latest = status?.latest ?? null;
+
+  return (
+    <Card style={styles.profileVerificationCard}>
+      <View style={styles.profileVerificationHeader}>
+        <View style={styles.profileVerificationIcon}>
+          {loading ? <ActivityIndicator color={colors.primary} /> : <Icon name={status?.isVerified ? 'check' : 'shield'} size={22} color={colors.primary} />}
+        </View>
+        <View style={styles.profileVerificationCopy}>
+          <Text style={styles.profileVerificationTitle}>
+            {status?.isVerified ? 'Profile verified' : latest?.status === 'pending' ? 'Verification pending review' : latest?.status === 'rejected' ? 'Verification not approved' : 'Verify your profile'}
+          </Text>
+          <Text style={styles.profileVerificationText}>
+            {status?.isVerified
+              ? 'A verified badge can show on your profile.'
+              : latest?.status === 'pending'
+                ? 'We will notify you when the review is complete.'
+                : latest?.status === 'rejected'
+                  ? latest.rejection_reason ?? 'Please retake the selfie and try again.'
+                  : 'Show a selfie to earn a verified badge.'}
+          </Text>
+        </View>
+      </View>
+
+      {!loading && !status?.isVerified ? (
+        <View style={styles.profileVerificationFlow}>
+          {challenge ? (
+            <View style={styles.profileVerificationChallenge}>
+              <Text style={styles.profileVerificationChallengeText}>{challenge}</Text>
+              <Text style={styles.profileVerificationHint}>Take a selfie performing this gesture.</Text>
+            </View>
+          ) : null}
+
+          {selfieData ? (
+            <View style={styles.profileVerificationPreview}>
+              <Image source={{ uri: selfieData }} contentFit="cover" style={styles.profileVerificationPreviewImage} />
+            </View>
+          ) : null}
+
+          {selfieData ? (
+            <View style={styles.profileVerificationActions}>
+              <Button title="Retake" variant="outline" disabled={submitting} onPress={() => void openCamera()} style={styles.profileVerificationActionButton} />
+              <Button title="Submit" loading={submitting} onPress={() => void submitVerification()} style={styles.profileVerificationActionButton} />
+            </View>
+          ) : challenge ? (
+            <Button title="Open camera" fullWidth onPress={() => void openCamera()} />
+          ) : (
+            <Button title={latest?.status === 'pending' ? 'Retake and resubmit' : latest?.status === 'rejected' ? 'Try again' : 'Get verified'} fullWidth onPress={startChallenge} />
+          )}
+        </View>
+      ) : null}
+    </Card>
+  );
+}
+
 export function MyProfileScreen() {
-  useTheme();
-  const { user, setUser, logout } = useAuth();
+  const { colors: themeColors } = useTheme();
+  const { user, setUser } = useAuth();
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
   const [location, setLocation] = useState(user?.location ?? '');
   const [heightCm, setHeightCm] = useState(user?.heightCm ? String(user.heightCm) : '');
   const [interests, setInterests] = useState((user?.interests ?? []).join(', '));
+  const [ethnicity, setEthnicity] = useState(user?.ethnicity ?? '');
+  const [religion, setReligion] = useState(user?.religion ?? '');
+  const [bodyType, setBodyType] = useState(user?.bodyType ?? '');
+  const [relationshipStatus, setRelationshipStatus] = useState(user?.relationshipStatus ?? '');
+  const [lookingFor, setLookingFor] = useState(user?.lookingFor ?? '');
+  const [childrenStatus, setChildrenStatus] = useState(user?.childrenStatus ?? '');
+  const [smokingHabit, setSmokingHabit] = useState(user?.smokingHabit ?? '');
+  const [drinkingHabit, setDrinkingHabit] = useState(user?.drinkingHabit ?? '');
+  const [hasTattoos, setHasTattoos] = useState(user?.hasTattoos ?? false);
+  const [hasPiercings, setHasPiercings] = useState(user?.hasPiercings ?? false);
+  const [usesDrugs, setUsesDrugs] = useState(user?.usesDrugs ?? false);
   const [loading, setLoading] = useState(false);
   const [photoLoading, setPhotoLoading] = useState(false);
+  const [presenceLoading, setPresenceLoading] = useState<'online' | 'pause' | null>(null);
 
   async function changeProfilePhoto(source: 'library' | 'camera') {
     if (!user) return;
@@ -3703,14 +4853,55 @@ export function MyProfileScreen() {
     }
   }
 
+  async function updateOnlineStatus(isOnline: boolean) {
+    setPresenceLoading('online');
+    try {
+      await usersService.setOnlineStatus(isOnline);
+      if (user) setUser({ ...user, isOnline });
+    } catch (err) {
+      Alert.alert('Online status failed', err instanceof Error ? err.message : 'Try again later.');
+    } finally {
+      setPresenceLoading(null);
+    }
+  }
+
+  async function updatePauseStatus(isPaused: boolean) {
+    setPresenceLoading('pause');
+    try {
+      await usersService.setPauseStatus(isPaused);
+      if (user) setUser({ ...user, isPaused });
+    } catch (err) {
+      Alert.alert('Profile status failed', err instanceof Error ? err.message : 'Try again later.');
+    } finally {
+      setPresenceLoading(null);
+    }
+  }
+
   async function save() {
+    const parsedHeight = heightCm.trim() ? Number(heightCm) : null;
+    if (parsedHeight != null && (!Number.isFinite(parsedHeight) || parsedHeight < 100 || parsedHeight > 250)) {
+      Alert.alert('Height', 'Enter a height between 100 and 250 cm.');
+      return;
+    }
+
     setLoading(true);
     try {
       const updated = await usersService.updateProfile({
         displayName: cleanText(displayName, 50),
         bio: cleanText(bio, 500),
         location: cleanText(location, 80),
-        heightCm: heightCm ? Number(heightCm) : null,
+        heightCm: parsedHeight,
+        ethnicity,
+        religion,
+        bodyType,
+        relationshipStatus,
+        lookingFor,
+        childrenStatus,
+        smokingHabit,
+        drinkingHabit,
+        hasTattoos,
+        hasPiercings,
+        usesDrugs,
         interests: interests.split(',').map((item) => item.trim()).filter(Boolean),
       });
       setUser(updated);
@@ -3723,36 +4914,122 @@ export function MyProfileScreen() {
   }
 
   return (
-    <ScreenWrapper title="My profile">
+    <ScreenWrapper title="Edit Profile" subtitle="Manage the details people see and the signals used for matching." contentStyle={styles.profileDetailScreen}>
       {user ? (
         <>
-          <Card style={styles.profileHeader}>
-            <Avatar uri={user.profilePhotoUrl} name={user.displayName} size={72} />
-            <View style={styles.matchCopy}>
-              <Text variant="heading">{user.displayName}</Text>
-              <Text variant="muted">{user.email}</Text>
-              <Text variant="small" style={styles.subtle}>
-                {user.credits} credits
+          <View style={styles.settingsProfile}>
+            <Avatar uri={user.profilePhotoUrl} name={user.displayName} size={92} />
+            <View style={styles.settingsProfileCopy}>
+              <Text style={styles.settingsProfileName} numberOfLines={1}>
+                {user.displayName}
               </Text>
+              <Text style={styles.settingsProfileEmail} numberOfLines={1}>
+                {user.email}
+              </Text>
+              <View style={styles.settingsProfileBadges}>
+                <View style={styles.settingsStatusBadge}>
+                  <View style={[styles.settingsStatusDot, user.isOnline ? styles.settingsStatusDotOnline : styles.settingsStatusDotOffline]} />
+                  <Text style={styles.settingsStatusText}>{user.isOnline ? 'Online' : 'Offline'}</Text>
+                </View>
+                {user.isPremium ? (
+                  <View style={[styles.settingsStatusBadge, styles.settingsPremiumBadge]}>
+                    <Icon name="crown" size={13} color={themeColors.primary} />
+                    <Text style={styles.settingsStatusText}>Premium</Text>
+                  </View>
+                ) : null}
+              </View>
             </View>
-          </Card>
+          </View>
+
+          <SettingsSection title="Visibility">
+            <SettingsRow
+              icon="compass"
+              label={user.isOnline ? 'Visible to others' : 'Hidden from others'}
+              value="Toggle to appear online or invisible"
+              right={
+                <SettingsPillSwitch
+                  value={user.isOnline}
+                  activeLabel="Visible"
+                  inactiveLabel="Hidden"
+                  loading={presenceLoading === 'online'}
+                  tone="success"
+                  onValueChange={(nextValue) => void updateOnlineStatus(nextValue)}
+                />
+              }
+            />
+            <SettingsRow
+              icon="pause"
+              label={user.isPaused ? 'Profile paused' : 'Profile active'}
+              value={user.isPaused ? "You won't appear in discovery until you unpause" : "You're showing up in discovery"}
+              right={
+                <SettingsPillSwitch
+                  value={!user.isPaused}
+                  activeLabel="Active"
+                  inactiveLabel="Paused"
+                  loading={presenceLoading === 'pause'}
+                  tone="primary"
+                  onValueChange={(isActive) => void updatePauseStatus(!isActive)}
+                />
+              }
+            />
+          </SettingsSection>
+
+          <ProfileVerificationSection />
+
           <View style={styles.photoActions}>
             <Button title="Change profile photo" fullWidth variant="outline" loading={photoLoading} onPress={() => void changeProfilePhoto('library')} />
             <Button title="Take new photo" fullWidth variant="outline" disabled={photoLoading} onPress={() => void changeProfilePhoto('camera')} />
           </View>
-          <Input label="Display name" value={displayName} onChangeText={setDisplayName} />
-          <Input label="Bio" value={bio} onChangeText={setBio} multiline />
-          <Input label="Location" value={location} onChangeText={setLocation} />
-          <Input label="Height cm" value={heightCm} onChangeText={setHeightCm} keyboardType="number-pad" />
-          <Input label="Interests" value={interests} onChangeText={setInterests} />
-          <Button title="Save profile" loading={loading} onPress={save} />
-          <View style={styles.actionRow}>
-            <Button title="Media" variant="outline" onPress={() => router.push('/me/media')} />
-            <Button title="Preferences" variant="outline" onPress={() => router.push('/me/preferences')} />
-            <Button title="Settings" variant="outline" onPress={() => router.push('/settings')} />
+
+          <View style={styles.profileFormSection}>
+            <Text style={styles.profileFormSectionTitle}>Basic Info</Text>
+            <Input label="Display Name" value={displayName} onChangeText={setDisplayName} />
+            <Input label="Bio" value={bio} onChangeText={setBio} placeholder="Tell people about yourself..." multiline />
+            <Input label="Height (cm)" value={heightCm} onChangeText={setHeightCm} placeholder="e.g. 175" keyboardType="number-pad" />
+            <Input label="Location" value={location} onChangeText={setLocation} placeholder="Search city..." />
           </View>
-          <Button title="Premium and credits" variant="secondary" onPress={() => router.push('/premium')} />
-          <Button title="Log out" variant="ghost" onPress={() => void logout()} />
+
+          <View style={styles.profileFormSection}>
+            <Text style={styles.profileFormSectionTitle}>Identity</Text>
+            <ProfileSelect label="Ethnicity" value={ethnicity} options={PROFILE_ETHNICITY_OPTIONS} onChange={setEthnicity} />
+            <ProfileSelect label="Religion" value={religion} options={PROFILE_RELIGION_OPTIONS} onChange={setReligion} />
+            <ProfileSelect label="Body Type" value={bodyType} options={PROFILE_BODY_TYPE_OPTIONS} onChange={setBodyType} />
+            <ProfileSelect label="Relationship Status" value={relationshipStatus} options={PROFILE_RELATIONSHIP_STATUS_OPTIONS} onChange={setRelationshipStatus} />
+          </View>
+
+          <View style={styles.profileFormSection}>
+            <Text style={styles.profileFormSectionTitle}>Intentions</Text>
+            <ProfileSelect label="Looking For" value={lookingFor} options={PROFILE_LOOKING_FOR_OPTIONS} onChange={setLookingFor} />
+            <ProfileSelect label="Children" value={childrenStatus} options={PROFILE_CHILDREN_STATUS_OPTIONS} onChange={setChildrenStatus} />
+          </View>
+
+          <View style={styles.profileFormSection}>
+            <Text style={styles.profileFormSectionTitle}>Lifestyle</Text>
+            <ProfileSelect label="Smoking" value={smokingHabit} options={PROFILE_SMOKING_OPTIONS} onChange={setSmokingHabit} />
+            <ProfileSelect label="Drinking" value={drinkingHabit} options={PROFILE_DRINKING_OPTIONS} onChange={setDrinkingHabit} />
+            <SettingsRow
+              icon="profile"
+              label="I have tattoos"
+              right={<SettingsPillSwitch value={hasTattoos} activeLabel="Yes" inactiveLabel="No" onValueChange={setHasTattoos} />}
+            />
+            <SettingsRow
+              icon="profile"
+              label="I have piercings"
+              right={<SettingsPillSwitch value={hasPiercings} activeLabel="Yes" inactiveLabel="No" onValueChange={setHasPiercings} />}
+            />
+            <SettingsRow
+              icon="shield"
+              label="I use recreational drugs"
+              right={<SettingsPillSwitch value={usesDrugs} activeLabel="Yes" inactiveLabel="No" onValueChange={setUsesDrugs} />}
+            />
+          </View>
+
+          <View style={styles.profileFormSection}>
+            <Text style={styles.profileFormSectionTitle}>Interests</Text>
+            <Input label="Interests" value={interests} onChangeText={setInterests} placeholder="Travel, Music, Fitness" />
+          </View>
+
+          <Button title="Save Profile" loading={loading} onPress={save} />
         </>
       ) : null}
     </ScreenWrapper>
@@ -3801,42 +5078,68 @@ export function MediaScreen() {
   }
 
   return (
-    <ScreenWrapper title="Media">
-      <Loadable loading={resource.loading} error={resource.error}>
-        {resource.data && resource.data.length > 0 ? <MediaGallery items={resource.data} /> : <EmptyState title="No media yet" />}
-      </Loadable>
-      {resource.data?.map((item) => (
-        <Card key={item.id} style={styles.rowBetween}>
-          <Text numberOfLines={1} style={styles.flex}>
-            {item.isProfilePhoto ? 'Profile photo' : item.mediaType} {item.isNude ? 'NSFW' : ''}
-          </Text>
-          <Button title="Delete" variant="danger" onPress={() => void remove(item)} />
-        </Card>
-      ))}
-      <Section title="Upload">
-        <View style={styles.mediaPickerPreview}>
-          {pickedImage ? (
-            <Image source={{ uri: pickedImage.uri }} contentFit="cover" style={StyleSheet.absoluteFill} />
+    <ScreenWrapper title="My Photos" subtitle="Manage the photos shown on your profile and in your gallery." contentStyle={styles.profileDetailScreen}>
+      <View style={styles.profileFormSection}>
+        <Loadable loading={resource.loading} error={resource.error}>
+          {resource.data && resource.data.length > 0 ? (
+            <View style={styles.mediaManagementGrid}>
+              {resource.data.map((item) => (
+                <View key={item.id} style={styles.mediaManagementItem}>
+                  <ProtectedImage uri={item.url} locked={item.isNude} height={124} />
+                  <View style={styles.mediaManagementMeta}>
+                    <Text style={styles.mediaManagementTitle} numberOfLines={1}>
+                      {item.isProfilePhoto ? 'Profile photo' : item.isNude ? 'Private photo' : 'Photo'}
+                    </Text>
+                    <Pressable accessibilityRole="button" onPress={() => void remove(item)} style={({ pressed }) => [styles.mediaTileDelete, pressed ? styles.pressedFade : null]}>
+                      <Text style={styles.mediaTileDeleteText}>Delete</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </View>
           ) : (
-            <View style={styles.photoPlaceholder}>
-              <View style={styles.photoPlus}>
-                <Icon name="camera" size={25} color={colors.white} />
+            <View style={styles.likesEmpty}>
+              <View style={styles.likesEmptyIcon}>
+                <Icon name="photo" size={32} color={colors.textSubtle} />
               </View>
-              <Text variant="small" style={styles.photoHint}>
-                Select photo
-              </Text>
+              <Text style={styles.likesEmptyTitle}>No photos yet</Text>
+              <Text style={styles.likesEmptyText}>Add photos so people can see more of your profile.</Text>
             </View>
           )}
+        </Loadable>
+      </View>
+
+      <Section title="Upload Photo">
+        {pickedImage ? (
+          <View style={styles.mediaPickerPreview}>
+            <Image source={{ uri: pickedImage.uri }} contentFit="cover" style={StyleSheet.absoluteFill} />
+          </View>
+        ) : null}
+        <View style={styles.mediaUploadActionGrid}>
+          <Pressable accessibilityRole="button" onPress={() => void chooseMedia('library')} style={({ pressed }) => [styles.mediaUploadAction, pressed ? styles.pressedFade : null]}>
+            <Icon name="image-plus" size={24} color={colors.primary} />
+            <Text style={styles.mediaUploadActionText}>Choose photo</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => void chooseMedia('camera')} style={({ pressed }) => [styles.mediaUploadAction, pressed ? styles.pressedFade : null]}>
+            <Icon name="camera" size={24} color={colors.primary} />
+            <Text style={styles.mediaUploadActionText}>Take photo</Text>
+          </Pressable>
         </View>
-        <View style={styles.photoActions}>
-          <Button title="Choose photo" fullWidth variant="outline" onPress={() => void chooseMedia('library')} />
-          <Button title="Take photo" fullWidth variant="outline" onPress={() => void chooseMedia('camera')} />
+        <View style={styles.mediaUploadOptions}>
+          <SettingsRow
+            icon="profile"
+            label="Use as profile photo"
+            value="Make this the main photo people see first"
+            right={<SettingsPillSwitch value={isProfilePhoto} activeLabel="Yes" inactiveLabel="No" onValueChange={setIsProfilePhoto} />}
+          />
+          <SettingsRow
+            icon="shield"
+            label="Private media"
+            value="Mark this upload as premium private media"
+            right={<SettingsPillSwitch value={isNude} activeLabel="Private" inactiveLabel="Public" tone="danger" onValueChange={setIsNude} />}
+          />
         </View>
-        <View style={styles.actionRow}>
-          <Button title={isProfilePhoto ? 'Profile photo' : 'Gallery'} variant={isProfilePhoto ? 'primary' : 'outline'} onPress={() => setIsProfilePhoto((v) => !v)} />
-          <Button title={isNude ? 'NSFW' : 'Standard'} variant={isNude ? 'danger' : 'outline'} onPress={() => setIsNude((v) => !v)} />
-        </View>
-        <Button title="Upload" fullWidth loading={loading} onPress={upload} />
+        <Button title="Upload" fullWidth loading={loading} disabled={!pickedImage} onPress={upload} />
       </Section>
     </ScreenWrapper>
   );
@@ -4334,30 +5637,6 @@ export function SettingsScreen() {
     <ScreenWrapper title="Settings" subtitle="Manage your account, visibility, payments, and app preferences." contentStyle={styles.settingsContent}>
       {user ? (
         <>
-          <View style={styles.settingsProfile}>
-            <Avatar uri={user.profilePhotoUrl} name={user.displayName} size={92} />
-            <View style={styles.settingsProfileCopy}>
-              <Text style={styles.settingsProfileName} numberOfLines={1}>
-                {user.displayName}
-              </Text>
-              <Text style={styles.settingsProfileEmail} numberOfLines={1}>
-                {user.email}
-              </Text>
-              <View style={styles.settingsProfileBadges}>
-                <View style={styles.settingsStatusBadge}>
-                  <View style={[styles.settingsStatusDot, user.isOnline ? styles.settingsStatusDotOnline : styles.settingsStatusDotOffline]} />
-                  <Text style={styles.settingsStatusText}>{user.isOnline ? 'Online' : 'Offline'}</Text>
-                </View>
-                {user.isPremium ? (
-                  <View style={[styles.settingsStatusBadge, styles.settingsPremiumBadge]}>
-                    <Icon name="crown" size={13} color={themeColors.primary} />
-                    <Text style={styles.settingsStatusText}>Premium</Text>
-                  </View>
-                ) : null}
-              </View>
-            </View>
-          </View>
-
           <SettingsSection title="Account Settings">
             <SettingsRow icon="profile" label="Edit Profile" value="Profile, photos, and interests" onPress={() => router.push('/me' as Href)} />
             <SettingsRow icon="lock" label="Change password" value="Update your sign-in password" onPress={() => setPasswordModalOpen(true)} />
@@ -4645,21 +5924,53 @@ export function PaymentHistoryScreen() {
   useTheme();
   const resource = useResource<PaymentRecord[]>(premiumService.history);
   return (
-    <ScreenWrapper title="Payment history">
+    <ScreenWrapper title="Payment History" subtitle="View your past payments and transactions." contentStyle={styles.plainListScreen}>
       <Loadable loading={resource.loading} error={resource.error}>
         {resource.data && resource.data.length > 0 ? (
-          resource.data.map((payment) => (
-            <Card key={payment.id} style={styles.gap}>
-              <View style={styles.rowBetween}>
-                <Text style={styles.bold}>{payment.itemId}</Text>
-                <Badge label={payment.status} tone={payment.status === 'completed' ? 'success' : 'default'} />
+          <View style={styles.plainList}>
+            {resource.data.map((payment) => (
+              <View key={payment.id} style={styles.plainListRow}>
+                <View style={styles.plainRowContent}>
+                  <View style={styles.plainRowIcon}>
+                    <Icon name={payment.itemType.toLowerCase().includes('credit') ? 'bolt' : 'payments'} size={20} color={colors.primary} />
+                  </View>
+                  <View style={styles.plainRowMain}>
+                    <View style={styles.paymentPlainHeader}>
+                      <View style={styles.paymentPlainCopy}>
+                        <Text style={styles.plainListTitle} numberOfLines={1}>
+                          {displayLabel(payment.itemId)}
+                        </Text>
+                        <Text style={styles.plainListMeta} numberOfLines={1}>
+                          {displayLabel(payment.itemType)} - {formatDateTime(payment.createdAt)}
+                        </Text>
+                      </View>
+                      <Text style={styles.paymentPlainAmount}>{formatCurrency(payment.amount, payment.currency)}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.paymentPlainStatus,
+                        payment.status.toLowerCase() === 'completed' || payment.status.toLowerCase() === 'captured' || payment.status.toLowerCase() === 'paid'
+                          ? styles.paymentPlainStatusSuccess
+                          : payment.status.toLowerCase() === 'failed' || payment.status.toLowerCase() === 'cancelled' || payment.status.toLowerCase() === 'declined'
+                            ? styles.paymentPlainStatusDanger
+                            : styles.paymentPlainStatusMuted,
+                      ]}
+                    >
+                      {displayLabel(payment.status)}
+                    </Text>
+                  </View>
+                </View>
               </View>
-              <Text>{formatCurrency(payment.amount, payment.currency)}</Text>
-              <Text variant="muted">{formatDateTime(payment.createdAt)}</Text>
-            </Card>
-          ))
+            ))}
+          </View>
         ) : (
-          <EmptyState title="No payments" />
+          <View style={styles.likesEmpty}>
+            <View style={styles.likesEmptyIcon}>
+              <Icon name="payments" size={32} color={colors.textSubtle} />
+            </View>
+            <Text style={styles.likesEmptyTitle}>No payments yet</Text>
+            <Text style={styles.likesEmptyText}>Premium and credit purchases will appear here after checkout.</Text>
+          </View>
         )}
       </Loadable>
     </ScreenWrapper>
@@ -5344,7 +6655,7 @@ function createStyles(themeColors: typeof colors) {
     gap: 10,
   },
   mediaPickerPreview: {
-    height: 220,
+    height: 132,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
@@ -5352,6 +6663,72 @@ function createStyles(themeColors: typeof colors) {
     backgroundColor: themeColors.card,
     borderWidth: 1,
     borderColor: themeColors.border,
+  },
+  mediaManagementGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  mediaManagementItem: {
+    width: '48%',
+    overflow: 'hidden',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    backgroundColor: themeColors.card,
+  },
+  mediaManagementMeta: {
+    minHeight: 44,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  mediaManagementTitle: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  mediaTileDelete: {
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  mediaTileDeleteText: {
+    color: themeColors.danger,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+  },
+  mediaUploadActionGrid: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  mediaUploadAction: {
+    flex: 1,
+    minHeight: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    backgroundColor: themeColors.card,
+  },
+  mediaUploadActionText: {
+    color: themeColors.text,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  mediaUploadOptions: {
+    gap: 0,
+    paddingTop: 2,
   },
   onboarding: {
     justifyContent: 'center',
@@ -5661,14 +7038,130 @@ function createStyles(themeColors: typeof colors) {
     flexWrap: 'wrap',
     gap: 10,
   },
-  list: {
-    gap: 0,
-  },
-  notificationRow: {
-    paddingVertical: 14,
+  plainListScreen: {
     gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 28,
+  },
+  inlineTextAction: {
+    alignSelf: 'flex-end',
+    minHeight: 30,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  inlineTextActionLabel: {
+    color: themeColors.primary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  plainList: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: themeColors.border,
+  },
+  plainListRow: {
+    paddingVertical: 14,
+    gap: 7,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: themeColors.border,
+  },
+  plainRowContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  plainRowIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 21,
+    backgroundColor: 'rgba(233,30,99,0.1)',
+  },
+  plainRowMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 7,
+  },
+  notificationPlainHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  notificationPlainTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  notificationUnreadDot: {
+    width: 7,
+    height: 7,
+    borderRadius: radius.pill,
+    backgroundColor: themeColors.primary,
+  },
+  plainListTitle: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+  plainListDate: {
+    maxWidth: 118,
+    color: themeColors.textSubtle,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  plainListMeta: {
+    color: themeColors.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  plainListBody: {
+    color: themeColors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  paymentPlainHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  paymentPlainCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  paymentPlainAmount: {
+    color: themeColors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '900',
+    textAlign: 'right',
+  },
+  paymentPlainStatus: {
+    alignSelf: 'flex-start',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '900',
+  },
+  paymentPlainStatusSuccess: {
+    color: themeColors.success,
+  },
+  paymentPlainStatusDanger: {
+    color: themeColors.danger,
+  },
+  paymentPlainStatusMuted: {
+    color: themeColors.textMuted,
   },
   grid: {
     flexDirection: 'row',
@@ -5677,9 +7170,6 @@ function createStyles(themeColors: typeof colors) {
   },
   gap: {
     gap: 12,
-  },
-  section: {
-    gap: 10,
   },
   field: {
     paddingVertical: 8,
@@ -5691,15 +7181,100 @@ function createStyles(themeColors: typeof colors) {
     color: themeColors.danger,
     fontWeight: '700',
   },
-  interestsHero: {
+  onboardingSetupScreen: {
+    gap: 20,
+    paddingTop: 28,
+    paddingBottom: 28,
+  },
+  onboardingSetupHeader: {
+    gap: 18,
+  },
+  onboardingStepRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 9,
+  },
+  onboardingStepIcon: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 17,
+    backgroundColor: 'rgba(233,30,99,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,99,0.24)',
+  },
+  onboardingStepText: {
+    color: themeColors.primary,
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  onboardingSetupCopy: {
+    gap: 8,
+  },
+  onboardingSetupTitle: {
+    color: themeColors.text,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: '900',
+  },
+  onboardingSetupBody: {
+    color: themeColors.textMuted,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '700',
+  },
+  onboardingProgressBlock: {
+    gap: 8,
+  },
+  onboardingProgressTrack: {
+    height: 7,
+    overflow: 'hidden',
+    borderRadius: radius.pill,
+    backgroundColor: themeColors.cardMuted,
+  },
+  onboardingProgressFill: {
+    height: '100%',
+    borderRadius: radius.pill,
+    backgroundColor: themeColors.primary,
+  },
+  onboardingProgressText: {
+    color: themeColors.textSubtle,
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: '800',
+  },
+  interestsPanel: {
+    gap: 16,
+  },
+  interestsPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  interestsPanelCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  interestsPanelTitle: {
+    color: themeColors.text,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '900',
+  },
+  interestsPanelSubtitle: {
+    color: themeColors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   interestCountPill: {
-    alignSelf: 'center',
     borderRadius: radius.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     backgroundColor: themeColors.cardMuted,
     borderWidth: 1,
     borderColor: themeColors.border,
@@ -5712,11 +7287,15 @@ function createStyles(themeColors: typeof colors) {
   interestGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 9,
   },
   interestChip: {
-    minHeight: 46,
-    paddingHorizontal: 16,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingLeft: 15,
+    paddingRight: 12,
     borderRadius: radius.pill,
     borderColor: themeColors.border,
     borderWidth: 1,
@@ -5727,13 +7306,138 @@ function createStyles(themeColors: typeof colors) {
     backgroundColor: themeColors.primary,
     borderColor: themeColors.primary,
   },
+  interestChipPressed: {
+    transform: [{ scale: 0.98 }],
+    opacity: 0.9,
+  },
   interestChipText: {
     color: themeColors.text,
     fontSize: 14,
+    lineHeight: 18,
     fontWeight: '800',
   },
   interestChipTextActive: {
     color: themeColors.white,
+  },
+  interestChipCheck: {
+    width: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: themeColors.white,
+  },
+  onboardingFooterActions: {
+    gap: 10,
+    paddingTop: 2,
+  },
+  onboardingWelcomeScreen: {
+    justifyContent: 'center',
+    gap: 24,
+    paddingTop: 28,
+    paddingBottom: 28,
+  },
+  onboardingWelcomeHero: {
+    alignItems: 'center',
+    gap: 13,
+  },
+  welcomePulseWrap: {
+    width: 118,
+    height: 118,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  welcomePulseOuter: {
+    position: 'absolute',
+    width: 118,
+    height: 118,
+    borderRadius: 59,
+    backgroundColor: 'rgba(233,30,99,0.1)',
+  },
+  welcomePulseInner: {
+    position: 'absolute',
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: 'rgba(233,30,99,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,99,0.28)',
+  },
+  welcomeHeartCircle: {
+    width: 76,
+    height: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 38,
+    backgroundColor: themeColors.primary,
+    ...shadow,
+  },
+  welcomeTitle: {
+    maxWidth: 320,
+    color: themeColors.text,
+    fontSize: 29,
+    lineHeight: 35,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  welcomeBody: {
+    maxWidth: 330,
+    color: themeColors.textMuted,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  welcomeStatsList: {
+    width: '100%',
+    gap: 10,
+  },
+  welcomeStatCard: {
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+    paddingVertical: 14,
+    paddingHorizontal: 15,
+  },
+  welcomeStatIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 21,
+    borderWidth: 1,
+  },
+  welcomeStatCopy: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  welcomeStatLabel: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  welcomeStatValue: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+    textAlign: 'right',
+  },
+  welcomeActionBlock: {
+    gap: 12,
+  },
+  welcomeFootnote: {
+    color: themeColors.textSubtle,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   discoverRoot: {
     flex: 1,
@@ -6529,6 +8233,56 @@ function createStyles(themeColors: typeof colors) {
     lineHeight: 16,
     fontWeight: '700',
   },
+  callNotice: {
+    position: 'absolute',
+    top: 82,
+    right: 12,
+    left: 12,
+    zIndex: 140,
+    minHeight: 74,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderRadius: radius.lg,
+    backgroundColor: themeColors.backgroundElevated,
+    borderWidth: 1,
+    borderColor: themeColors.borderStrong,
+    ...shadow,
+  },
+  callNoticeIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 21,
+  },
+  callNoticeIconInfo: {
+    backgroundColor: themeColors.primary,
+  },
+  callNoticeIconSuccess: {
+    backgroundColor: themeColors.success,
+  },
+  callNoticeIconError: {
+    backgroundColor: themeColors.danger,
+  },
+  callNoticeCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  callNoticeTitle: {
+    color: themeColors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+  callNoticeMessage: {
+    color: themeColors.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
   callRoundButton: {
     width: 40,
     height: 40,
@@ -6594,6 +8348,30 @@ function createStyles(themeColors: typeof colors) {
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.86)',
   },
+  callVideoHeader: {
+    position: 'absolute',
+    top: 42,
+    left: 16,
+    right: 150,
+    gap: 4,
+  },
+  callVideoName: {
+    color: themeColors.white,
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: '900',
+  },
+  callVideoStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  callVideoStatus: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '800',
+  },
   callControls: {
     position: 'absolute',
     right: 0,
@@ -6602,14 +8380,14 @@ function createStyles(themeColors: typeof colors) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 18,
+    gap: 12,
   },
   callControlButton: {
-    width: 58,
-    height: 58,
+    width: 52,
+    height: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 29,
+    borderRadius: 26,
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.16)',
@@ -6755,6 +8533,31 @@ function createStyles(themeColors: typeof colors) {
     borderRadius: radius.lg,
     marginTop: 4,
     backgroundColor: themeColors.cardMuted,
+  },
+  chatVideoWrap: {
+    width: 230,
+    height: 260,
+    overflow: 'hidden',
+    borderRadius: radius.lg,
+    marginTop: 4,
+    backgroundColor: themeColors.black,
+  },
+  chatVideoTypeBadge: {
+    position: 'absolute',
+    left: 8,
+    bottom: 8,
+    minHeight: 26,
+    paddingHorizontal: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  chatVideoTypeText: {
+    color: themeColors.white,
+    fontSize: 11,
+    fontWeight: '900',
   },
   chatViewOnceBadge: {
     position: 'absolute',
@@ -6904,6 +8707,29 @@ function createStyles(themeColors: typeof colors) {
     borderWidth: 1,
     borderColor: themeColors.border,
   },
+  chatTrayVideoPreview: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: themeColors.black,
+  },
+  chatTrayTypeBadge: {
+    position: 'absolute',
+    left: 5,
+    bottom: 5,
+    minHeight: 22,
+    paddingHorizontal: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(0,0,0,0.62)',
+  },
+  chatTrayTypeText: {
+    color: themeColors.white,
+    fontSize: 10,
+    fontWeight: '900',
+  },
   chatTrayRemove: {
     position: 'absolute',
     top: 5,
@@ -7027,9 +8853,60 @@ function createStyles(themeColors: typeof colors) {
     borderColor: themeColors.border,
     backgroundColor: themeColors.card,
   },
-  chatInputRecording: {
-    borderColor: themeColors.primary,
+  chatRecordingBar: {
+    flex: 1,
+    minWidth: 118,
+    minHeight: 44,
+    paddingHorizontal: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,99,0.34)',
     backgroundColor: 'rgba(233,30,99,0.08)',
+  },
+  chatRecordingBarCancel: {
+    borderColor: themeColors.danger,
+    backgroundColor: 'rgba(239,68,68,0.12)',
+  },
+  chatRecordingBarDark: {
+    flex: 0,
+    width: '100%',
+    borderColor: 'rgba(255,255,255,0.24)',
+    backgroundColor: 'rgba(0,0,0,0.44)',
+  },
+  recordingDot: {
+    width: 9,
+    height: 9,
+    borderRadius: radius.pill,
+    backgroundColor: themeColors.textSubtle,
+  },
+  recordingDotLive: {
+    backgroundColor: themeColors.danger,
+  },
+  chatRecordingDuration: {
+    color: themeColors.primary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  chatRecordingDurationDark: {
+    color: themeColors.white,
+  },
+  chatRecordingHint: {
+    flex: 1,
+    color: themeColors.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  chatRecordingHintCancel: {
+    color: themeColors.danger,
+  },
+  chatRecordingHintDark: {
+    color: 'rgba(255,255,255,0.78)',
   },
   chatSendButton: {
     width: 42,
@@ -7044,6 +8921,85 @@ function createStyles(themeColors: typeof colors) {
     overflow: 'hidden',
     borderRadius: radius.lg,
     backgroundColor: themeColors.black,
+  },
+  videoRecorderOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 220,
+    backgroundColor: themeColors.black,
+  },
+  videoRecorderShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.18)',
+  },
+  videoRecorderTopBar: {
+    position: 'absolute',
+    top: 18,
+    left: 14,
+    right: 14,
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  videoRecorderIconButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  videoRecorderStatusPill: {
+    minHeight: 36,
+    paddingHorizontal: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  videoRecorderStatusText: {
+    color: themeColors.white,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  videoRecorderBottomBar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 26,
+    gap: 16,
+  },
+  videoRecordControlRow: {
+    minHeight: 92,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoRecordButton: {
+    width: 82,
+    height: 82,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 41,
+    borderWidth: 4,
+    borderColor: themeColors.white,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  videoRecordButtonActive: {
+    transform: [{ scale: 1.06 }],
+    borderColor: themeColors.danger,
+  },
+  videoRecordButtonCore: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: themeColors.danger,
   },
   gifPickerList: {
     maxHeight: 360,
@@ -7373,7 +9329,7 @@ function createStyles(themeColors: typeof colors) {
   matchesStoriesSection: {
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 10,
+    paddingBottom: 12,
     gap: 10,
   },
   matchesSectionLabel: {
@@ -7385,12 +9341,17 @@ function createStyles(themeColors: typeof colors) {
   },
   matchesStoryRail: {
     gap: 13,
+    minHeight: 96,
+    paddingTop: 8,
+    paddingBottom: 6,
     paddingRight: 18,
   },
   matchesStoryItem: {
     position: 'relative',
     width: 70,
+    minHeight: 88,
     alignItems: 'center',
+    justifyContent: 'flex-start',
     gap: 7,
   },
   likesStoryCircle: {
@@ -7489,7 +9450,7 @@ function createStyles(themeColors: typeof colors) {
     fontWeight: '900',
   },
   matchesStoryEmpty: {
-    minHeight: 72,
+    minHeight: 88,
     justifyContent: 'center',
     paddingHorizontal: 8,
   },
@@ -7669,6 +9630,12 @@ function createStyles(themeColors: typeof colors) {
     gap: 18,
     paddingHorizontal: 16,
     paddingTop: 12,
+  },
+  profileDetailScreen: {
+    gap: 18,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 28,
   },
   settingsProfile: {
     alignItems: 'center',
@@ -8152,6 +10119,167 @@ function createStyles(themeColors: typeof colors) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
+  },
+  profileFormSection: {
+    gap: 12,
+  },
+  profileSectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  profileSectionTitleCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  profileFormSectionTitle: {
+    paddingBottom: 3,
+    color: themeColors.primary,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '900',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: themeColors.border,
+  },
+  profileFormSectionSubtitle: {
+    color: themeColors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  profileSelectField: {
+    gap: 8,
+  },
+  profileSelectButton: {
+    minHeight: 52,
+    paddingHorizontal: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    backgroundColor: themeColors.card,
+  },
+  profileSelectValue: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  profileSelectPlaceholder: {
+    color: themeColors.textSubtle,
+  },
+  profileSelectList: {
+    maxHeight: 430,
+  },
+  profileSelectListContent: {
+    gap: 8,
+    paddingBottom: 8,
+  },
+  profileSelectOption: {
+    minHeight: 50,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    backgroundColor: themeColors.card,
+  },
+  profileSelectOptionActive: {
+    borderColor: themeColors.primary,
+    backgroundColor: themeColors.cardMuted,
+  },
+  profileSelectOptionText: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  profileSelectOptionTextActive: {
+    color: themeColors.primary,
+  },
+  profileVerificationCard: {
+    gap: 14,
+  },
+  profileVerificationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  profileVerificationIcon: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 21,
+    backgroundColor: 'rgba(233,30,99,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,99,0.24)',
+  },
+  profileVerificationCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  profileVerificationTitle: {
+    color: themeColors.text,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+  profileVerificationText: {
+    color: themeColors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+  profileVerificationFlow: {
+    gap: 12,
+  },
+  profileVerificationChallenge: {
+    gap: 6,
+    padding: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,99,0.24)',
+    backgroundColor: 'rgba(233,30,99,0.1)',
+  },
+  profileVerificationChallengeText: {
+    color: themeColors.text,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  profileVerificationHint: {
+    color: themeColors.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  profileVerificationPreview: {
+    height: 230,
+    overflow: 'hidden',
+    borderRadius: radius.lg,
+    backgroundColor: themeColors.black,
+  },
+  profileVerificationPreviewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  profileVerificationActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  profileVerificationActionButton: {
+    flex: 1,
   },
   price: {
     fontWeight: '900',

@@ -11,19 +11,21 @@
       "bundleIdentifier": "com.redlovetoday.app",
       "icon": "./assets/images/icon.png",
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow RedLove to use your camera for video calls.",
-        "NSMicrophoneUsageDescription": "Allow RedLove to use your microphone for voice calls, video calls, and voice notes.",
+        "NSCameraUsageDescription": "Allow RedLove to use your camera for video calls and video clips.",
+        "NSMicrophoneUsageDescription": "Allow RedLove to use your microphone for voice calls, video calls, voice notes, and video clips.",
         "ITSAppUsesNonExemptEncryption": false
       },
       "bitcode": false
     },
     "android": {
       "package": "com.redlovetoday.app",
+      "versionCode": 2,
       "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
         "backgroundColor": "#13051f",
         "foregroundImage": "./assets/images/adaptive-icon.png"
       },
+      "softwareKeyboardLayoutMode": "resize",
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
@@ -60,6 +62,14 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow RedLove to use your camera for video calls and video clips.",
+          "microphonePermission": "Allow RedLove to use your microphone for video clips.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
         "@config-plugins/react-native-webrtc",
         {
           "cameraPermission": "Allow RedLove to use your camera for video calls.",
@@ -73,7 +83,8 @@
           "microphonePermission": "Allow RedLove to use your microphone for voice calls, video calls, and voice notes."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true,

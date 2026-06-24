@@ -55,6 +55,12 @@ export function GlobalIncomingCallBanner() {
     router.push({ pathname: '/chat/[matchId]', params: { matchId: String(call.match_id) } });
   }
 
+  function acceptCall() {
+    if (!call) return;
+    stopCallRingtone(ringtoneRef);
+    router.push({ pathname: '/chat/[matchId]', params: { matchId: String(call.match_id), acceptCallId: String(call.id) } });
+  }
+
   return (
     <View pointerEvents="box-none" style={[styles.wrap, { paddingTop: Math.max(insets.top + 8, 14) }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Incoming ${call.call_type} call from ${call.display_name}`} onPress={openChat} style={styles.banner}>
@@ -71,7 +77,7 @@ export function GlobalIncomingCallBanner() {
         <Pressable accessibilityRole="button" accessibilityLabel="Decline call" onPress={() => void declineCall()} style={[styles.roundButton, styles.declineButton]}>
           <Icon name="close" size={19} color={colors.white} />
         </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Open call" onPress={openChat} style={[styles.roundButton, styles.acceptButton]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Accept call" onPress={acceptCall} style={[styles.roundButton, styles.acceptButton]}>
           <Icon name="phone-call" size={18} color={colors.white} />
         </Pressable>
       </Pressable>
